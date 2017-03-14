@@ -127,6 +127,46 @@ inline void set_bit_in_array(unsigned char *coes, int i)
     return;
 }
 
+// Build subgeneration neighbors list for each packet according to subgeneration grouping scheme
+ID_list **build_subgen_nbr_list(struct snc_context *sc)
+{
+    int numpp = sc->snum + sc->cnum;
+    ID_list **gene_nbr = malloc(sizeof(ID_list*) * numpp);
+    int i, j;
+    for (i=0; i<numpp; i++) {
+        gene_nbr[i] = calloc(1, sizeof(ID_list));
+    }
+    for (i=0; i<sc->gnum; i++) {
+        for (j=0; j<sc->params.size_g; j++) {
+            int pktid = sc->gene[i]->pktid[j];
+            if (!exist_in_list(gene_nbr[pktid], i)) {
+                ID *nb = calloc(1, sizeof(ID));
+                if (nb == NULL)
+                    return NULL;
+                nb->data = i;
+                nb->ce   = 1;
+                nb->next = NULL;
+                append_to_list(gene_nbr[pktid], nb);
+            }
+        }
+    }
+    return gene_nbr;
+}
+
+void free_subgen_nbr_list(struct snc_context *sc, ID_list **gene_nbr)
+{
+    if (gene_nbr == NULL)
+        return;
+    int numpp = sc->snum + sc->cnum;
+    for (int i=0; i<numpp; i++) {
+        if (gene_nbr[i] != NULL) {
+            free_list(gene_nbr[i]);
+            gene_nbr[i] = NULL;
+        }
+    }
+    return;
+}
+
 /*
  * Swap two continuous memory blocks
  */

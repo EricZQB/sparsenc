@@ -88,7 +88,7 @@ AllocError:
 
 void process_packet_BD(struct decoding_context_BD *dec_ctx, struct snc_packet *pkt)
 {
-
+    static char fname[] = "process_packet_BD";
     dec_ctx->overhead += 1;
     dec_ctx->overheads[pkt->gid] += 1;
     int i, j, k;
@@ -104,15 +104,23 @@ void process_packet_BD(struct decoding_context_BD *dec_ctx, struct snc_packet *p
     GF_ELEMENT *ces = calloc(numpp, sizeof(GF_ELEMENT));
 
     if (dec_ctx->de_precode == 0) {
-        /*
-         * Before precode's check matrix was applied
-         */
-        for (i=0; i<gensize; i++) {
-            int index = dec_ctx->sc->gene[pkt->gid]->pktid[i];
-            if (dec_ctx->sc->params.bnc) {
-                ces[index] = get_bit_in_array(pkt->coes, i);
-            } else {
-                ces[index] = pkt->coes[i];
+        // Before precode's check matrix was applied.
+
+        // Pay attention to systematic packets. It is easy to handle in BD decoder. Let's 
+        // just transform it to full-length singleton vector.
+        if (pkt->gid == -1 && pkt->ucid == -1) {
+            fprintf(stderr, "%s: pkt's gid is -1 but ucid is not valid\n", fname);
+            return;
+        } else if (pkt->gid == -1 && pkt->ucid >= 0) {
+            ces[pkt->ucid] = 1;
+        } else {
+            for (i=0; i<gensize; i++) {
+                int index = dec_ctx->sc->gene[pkt->gid]->pktid[i];
+                if (dec_ctx->sc->params.bnc) {
+                    ces[index] = get_bit_in_array(pkt->coes, i);
+                } else {
+                    ces[index] = pkt->coes[i];
+                }
             }
         }
         for (i=0; i<numpp; i++) {
@@ -133,15 +141,25 @@ void process_packet_BD(struct decoding_context_BD *dec_ctx, struct snc_packet *p
             }
         }
     } else {
-        /*
-         *Parity-check matrix has been applied, and therefore the decoding matrix has been pivoted and re-ordered
-         */
-        for (i=0; i<gensize; i++) {
-            int orig_index = dec_ctx->sc->gene[pkt->gid]->pktid[i];
-            if (dec_ctx->sc->params.bnc) {
-                ces[orig_index] = get_bit_in_array(pkt->coes, i);
-            } else {
-                ces[orig_index] = pkt->coes[i];
+        // Parity-check matrix has been applied, and therefore the decoding matrix has been pivoted and re-ordered
+ 
+        // Pay attention to systematic packets. It is easy to handle in BD decoder. Let's 
+        // just transform it to full-length singleton vector. Note that, however, it's very
+        // unlikely that systematic packets would be received after parity-check matrix had
+        // been applied.
+        if (pkt->gid == -1 && pkt->ucid == -1) {
+            fprintf(stderr, "%s: pkt's gid is -1 but ucid is not valid\n", fname);
+            return;
+        } else if (pkt->gid == -1 && pkt->ucid >= 0) {
+            ces[pkt->ucid] = 1;
+        } else {
+            for (i=0; i<gensize; i++) {
+                int orig_index = dec_ctx->sc->gene[pkt->gid]->pktid[i];
+                if (dec_ctx->sc->params.bnc) {
+                    ces[orig_index] = get_bit_in_array(pkt->coes, i);
+                } else {
+                    ces[orig_index] = pkt->coes[i];
+                }
             }
         }
         for (i=0; i<numpp; i++) {

@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include "common.h"
 #include "decoderGG.h"
 #include "decoderOA.h"
@@ -27,6 +28,8 @@ struct snc_decoder *snc_create_decoder(struct snc_parameters *sp, int d_type)
 
     decoder->d_type = d_type;
 
+    int allowed_oh = 0;  // allowed overhead of OA decoder
+    char *aoh;
     switch (decoder->d_type) {
     case GG_DECODER:
         decoder->dec_ctx = create_dec_context_GG(sp);
@@ -34,7 +37,12 @@ struct snc_decoder *snc_create_decoder(struct snc_parameters *sp, int d_type)
             goto failure;
         break;
     case OA_DECODER:
-        decoder->dec_ctx = create_dec_context_OA(sp, 0);
+        // Use environment variable to pass in allowed overhead for OA
+        if ( (aoh = getenv("SNC_OA_AOH")) != NULL) {
+            allowed_oh = ceil(atof(aoh) * ceil(sp->datasize / sp->size_p));
+            printf("Allowed overhead for OA decoder: %d\n", allowed_oh);
+        }
+        decoder->dec_ctx = create_dec_context_OA(sp, allowed_oh);
         if (decoder->dec_ctx == NULL)
             goto failure;
         break;

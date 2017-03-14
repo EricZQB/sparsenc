@@ -88,9 +88,9 @@ int main(int argc, char *argv[])
         stop = clock();
         dtime += stop - start;
         count++;
-        if (count > 2200) {
+        if (count > 10000) {
             printf("Save decoder context into file\n");
-            snc_save_decoder_context(decoder, "CBDdecoder.part");
+            snc_save_decoder_context(decoder, "decoder.part");
             break;
         }
     }

@@ -103,12 +103,22 @@ void process_packet_CBD(struct decoding_context_CBD *dec_ctx, struct snc_packet 
     GF_ELEMENT *ces = calloc(numpp, sizeof(GF_ELEMENT));
     if (ces == NULL)
         fprintf(stderr, "%s: calloc ces failed\n", fname);
-    for (i=0; i<gensize; i++) {
-        int index = dec_ctx->sc->gene[pkt->gid]->pktid[i];
-        if (dec_ctx->sc->params.bnc) {
-            ces[index] = get_bit_in_array(pkt->coes, i);
-        } else {
-            ces[index] = pkt->coes[i];
+
+    // Pay attention to systematic packets. It is easy to handle in CBD decoder. Let's 
+    // just transform it to full-length singleton vector.
+    if (pkt->gid == -1 && pkt->ucid == -1) {
+        fprintf(stderr, "%s: pkt's gid is -1 but ucid is not valid\n", fname);
+    } else if (pkt->gid == -1 && pkt->ucid >= 0) {
+        ces[pkt->ucid] = 1;
+    } else {
+        // This is normal GNC packet
+        for (i=0; i<gensize; i++) {
+            int index = dec_ctx->sc->gene[pkt->gid]->pktid[i];
+            if (dec_ctx->sc->params.bnc) {
+                ces[index] = get_bit_in_array(pkt->coes, i);
+            } else {
+                ces[index] = pkt->coes[i];
+            }
         }
     }
 

@@ -68,9 +68,6 @@ sncRestore: libsparsenc.so test.restore.c
 sncDecodersFile: libsparsenc.so test.file.decoders.c
 	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
 #Test recoder
-sncRecoder2Hop: libsparsenc.so test.2hopRecoder.c
-	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
-#Test recoder
 sncRecoder-n-Hop: libsparsenc.so test.nhopRecoder.c
 	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
 #Test recoder, statically linked

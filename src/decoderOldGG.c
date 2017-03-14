@@ -3,7 +3,17 @@
  *-------------------------------------------------------------*/
 #include "common.h"
 #include "galois.h"
-#include "decoderNewGG.h"
+#include "decoderGG.h"
+
+// Store in-processing matrices of the decoder
+struct running_matrix {
+    int remaining_rows;         // encoding vectors available for the matrix
+    int remaining_cols;         // how many source packets remain unknown
+    unsigned char *erased;      // bits indicating erased columns (known packets)
+    GF_ELEMENT **coefficient;
+    GF_ELEMENT **message;
+};
+
 
 static void decode_generation(struct decoding_context_GG *dec_ctx, int gid);
 static void perform_iterative_decoding(struct decoding_context_GG *dec_ctx);
@@ -13,9 +23,10 @@ static void update_generations(struct decoding_context_GG *dec_ctx);
 static long update_running_matrix(struct decoding_context_GG *dec_ctx, int gid, int sid, int index);
 static int check_for_new_recoverables(struct decoding_context_GG *dec_ctx);
 static int check_for_new_decodables(struct decoding_context_GG *dec_ctx);
-static void free_running_matrix(struct running_matrix *matrix, int rows);
+static void mask_packet(struct decoding_context_GG *dec_ctx, GF_ELEMENT ce, int index, struct snc_packet *enc_pkt);
 
-static ID_list **gene_nbr = NULL;    // lists of subgeneration neighbors of each packet
+extern long long forward_substitute(int nrow, int ncolA, int ncolB, GF_ELEMENT **A, GF_ELEMENT **B);
+extern long long back_substitute(int nrow, int ncolA, int ncolB, GF_ELEMENT **A, GF_ELEMENT **B);
 
 // setup decoding context:
 struct decoding_context_GG *create_dec_context_GG(struct snc_parameters *sp)
@@ -37,11 +48,6 @@ struct decoding_context_GG *create_dec_context_GG(struct snc_parameters *sp)
         goto AllocError;
     }
     dec_ctx->sc = sc;
-
-    // Since GG decoder frequently needs to find out which generations a packet belongs to, we
-    // build the lists of subgeneration neighbors of each packet according to sc->gene. This list
-    // avoids calling has_item() in all subgenerations.
-    gene_nbr = build_subgen_nbr_list(sc);
 
     // memory areas needed for decoding
     dec_ctx->evolving_checks = calloc(dec_ctx->sc->cnum, sizeof(GF_ELEMENT *));
@@ -77,7 +83,7 @@ struct decoding_context_GG *create_dec_context_GG(struct snc_parameters *sp)
             fprintf(stderr, "%s: malloc dec_ctx->Matrices[%d]\n", fname, i);
             goto AllocError;
         }
-        dec_ctx->Matrices[i]->DoF_miss = dec_ctx->sc->params.size_g;
+        dec_ctx->Matrices[i]->remaining_cols = dec_ctx->sc->params.size_g;
 
         // Bits indicating column status
         int nflags = ALIGN(dec_ctx->sc->params.size_g, 8);  // Each byte has 8 bits
@@ -87,12 +93,13 @@ struct decoding_context_GG *create_dec_context_GG(struct snc_parameters *sp)
             goto AllocError;
         }
 
-        // Allocate coefficient rows and message matrices in running_matrix
-        // row: size_g rows, which are initialized to NULL
+        // Allocate coefficient and message matrices in running_matrix
+        // coefficeint: size_g x size_g
         // message:     size_g x size_p
-        dec_ctx->Matrices[i]->row = (struct row_vector **) calloc(dec_ctx->sc->params.size_g, sizeof(struct row_vector *));
-        if (dec_ctx->Matrices[i]->row == NULL) {
-            fprintf(stderr, "%s: calloc dec_ctx->Matrices[%d]->row failed\n", fname, i);
+        // Dim-1) Pointers to each row
+        dec_ctx->Matrices[i]->coefficient = calloc(dec_ctx->sc->params.size_g, sizeof(GF_ELEMENT*));
+        if (dec_ctx->Matrices[i]->coefficient == NULL) {
+            fprintf(stderr, "%s: calloc dec_ctx->Matrices[%d]->coefficient\n", fname, i);
             goto AllocError;
         }
         dec_ctx->Matrices[i]->message = calloc(dec_ctx->sc->params.size_g, sizeof(GF_ELEMENT*));
@@ -100,7 +107,13 @@ struct decoding_context_GG *create_dec_context_GG(struct snc_parameters *sp)
             fprintf(stderr, "%s: calloc dec_ctx->Matrices[%d]->messsage\n", fname, i);
             goto AllocError;
         }
+        // Dim-2) Elements of each row
         for (int j=0; j<dec_ctx->sc->params.size_g; j++) {
+            dec_ctx->Matrices[i]->coefficient[j] = calloc(dec_ctx->sc->params.size_g, sizeof(GF_ELEMENT));
+            if (dec_ctx->Matrices[i]->coefficient[j] == NULL) {
+                fprintf(stderr, "%s: calloc dec_ctx->Matrices[%d]->coefficient[%d]\n", fname, i, j);
+                goto AllocError;
+            }
             dec_ctx->Matrices[i]->message[j] = calloc(dec_ctx->sc->params.size_p, sizeof(GF_ELEMENT));
             if (dec_ctx->Matrices[i]->message[j] == NULL) {
                 fprintf(stderr, "%s: calloc dec_ctx->Matrices[%d]->messsage[%d]\n", fname, i, j);
@@ -132,10 +145,8 @@ void free_dec_context_GG(struct decoding_context_GG *dec_ctx)
 {
     if (dec_ctx == NULL)
         return;
-    if (dec_ctx->sc != NULL) {
-        free_subgen_nbr_list(dec_ctx->sc, gene_nbr);
+    if (dec_ctx->sc != NULL)
         snc_free_enc_context(dec_ctx->sc);
-    }
 
     int i, j, k;
     if (dec_ctx->evolving_checks != NULL) {
@@ -151,8 +162,23 @@ void free_dec_context_GG(struct decoding_context_GG *dec_ctx)
         for (i=0; i<dec_ctx->sc->gnum; i++){
             // Free each decoding matrix
             if (dec_ctx->Matrices[i] != NULL) {
-                free_running_matrix(dec_ctx->Matrices[i], dec_ctx->sc->params.size_g);
-                dec_ctx->Matrices[i] = NULL;
+                if (dec_ctx->Matrices[i]->erased != NULL)
+                    free(dec_ctx->Matrices[i]->erased);
+                if (dec_ctx->Matrices[i]->coefficient != NULL) {
+                    for (j=0; j<dec_ctx->sc->params.size_g; j++) {
+                        if (dec_ctx->Matrices[i]->coefficient[j] != NULL)
+                            free(dec_ctx->Matrices[i]->coefficient[j]);
+                    }
+                    free(dec_ctx->Matrices[i]->coefficient);
+                }
+                if (dec_ctx->Matrices[i]->message != NULL) {
+                    for (j=0; j<dec_ctx->sc->params.size_g; j++) {
+                        if (dec_ctx->Matrices[i]->message[j] != NULL)
+                            free(dec_ctx->Matrices[i]->message[j]);
+                    }
+                    free(dec_ctx->Matrices[i]->message);
+                }
+                free(dec_ctx->Matrices[i]);
             }
         }
         free(dec_ctx->Matrices);
@@ -164,133 +190,71 @@ void free_dec_context_GG(struct decoding_context_GG *dec_ctx)
     return;
 }
 
-static void free_running_matrix(struct running_matrix *matrix, int rows)
-{
-    if (matrix != NULL) {
-        if (matrix->erased != NULL)
-            free(matrix->erased);
-        int i;
-        if (matrix->row != NULL) {
-            for (i=0; i<rows; i++) {
-                if (matrix->row[i] != NULL) {
-                    if (matrix->row[i]->elem != NULL)
-                        free(matrix->row[i]->elem);
-                    free(matrix->row[i]);
-                }
-            }
-            free(matrix->row);
-        }
-        if (matrix->message != NULL) {
-            for (i=0; i<rows; i++) {
-                if (matrix->message[i] != NULL)
-                    free(matrix->message[i]);
-            }
-            free(matrix->message);
-        }
-        free(matrix);
-        matrix = NULL;
-        return;
-    }
-    return;
-}
-
 
 // cache a new received packet, extract its information and try decode the class it belongs to
 void process_packet_GG(struct decoding_context_GG *dec_ctx, struct snc_packet *pkt)
 {
-    static char fname[] = "process_packet_GG";
     dec_ctx->overhead += 1;
 
-    int i, j;
-    int gensize = dec_ctx->sc->params.size_g;
-    int pktsize = dec_ctx->sc->params.size_p;
-
+    // 1, check if the class of this packet belongs has already decoded
     int gid = pkt->gid;
-    if (gid == -1) {
-        int pktid = pkt->ucid;
-        if (dec_ctx->sc->pp[pktid] != NULL) {
-            printf("systematic packet %d has already been decoded/received.\n", pktid);
-            return;
-        }
-        dec_ctx->sc->pp[pktid] = malloc(sizeof(GF_ELEMENT)*pktsize);
-        memcpy(dec_ctx->sc->pp[pktid], pkt->syms, sizeof(GF_ELEMENT)*pktsize);
-        // Record the as a recently decoded packet
-        ID *new_id;
-        if ( (new_id = malloc(sizeof(ID))) == NULL )
-            fprintf(stderr, "%s: malloc new ID\n", fname);
-        new_id->data = pktid;
-        new_id->next = NULL;
-        append_to_list(dec_ctx->recent, new_id);
-        perform_iterative_decoding(dec_ctx);
-        return;
-    } else {
-        // normal GNC packets
-        struct running_matrix *matrix = dec_ctx->Matrices[gid];
-        if (matrix == NULL)
-            return;             // running matrix is freed when the subgeneration is completely decoded
 
-        int DoF_miss = matrix->DoF_miss;
-        // 1, Process the packet against the running matrix
-        int pivotfound = 0;
-        int pivot;
-        GF_ELEMENT *pkt_coes = calloc(gensize, sizeof(GF_ELEMENT));
-        GF_ELEMENT ce;
-        for (i=0; i<gensize; i++) {
-            if (dec_ctx->sc->params.bnc) {
-                ce = get_bit_in_array(pkt->coes, i);
-            } else {
-                ce = pkt->coes[i];
-            }
-            pkt_coes[i] = ce;
-            // if the corresponding source packet has been decoded, remove it from the coded packet
-            if (get_bit_in_array(matrix->erased, i) == 1) {
-                //find the decoded packet, mask it with this source packet
-                int src_id = dec_ctx->sc->gene[gid]->pktid[i];      // index of the corresponding source packet
-                galois_multiply_add_region(pkt->syms, dec_ctx->sc->pp[src_id], ce, pktsize);
-                pkt_coes[i] = 0;
-            }
+    struct running_matrix *matrix = dec_ctx->Matrices[gid];                 // get the corresponding matrix in processing
+    int r_rows = matrix->remaining_rows;                                    // record rows of current matrix
+    int r_cols = matrix->remaining_cols;                                    // record cols of current matrix
+    if (r_cols == 0)
+        return;                                                             // this class has finished decoding
+
+
+    // 2, extract its information, mask it against decoded packets if it's necessary
+    int i = 0, j, k;
+    for (j=0; j<dec_ctx->sc->params.size_g; j++) {
+        GF_ELEMENT coe;
+        if (dec_ctx->sc->params.bnc) {
+            coe = get_bit_in_array(pkt->coes, j);
+        } else {
+            coe = pkt->coes[j];
         }
-        // Translate the encoding vector to the sorted form as in the generation
-        GF_ELEMENT quotient;
-        for (i=0; i<gensize; i++) {
-            if (pkt_coes[i] != 0) {
-                if (matrix->row[i] != NULL) {
-                    quotient = galois_divide(pkt_coes[i], matrix->row[i]->elem[0]);
-                    galois_multiply_add_region(&(pkt_coes[i]), matrix->row[i]->elem, quotient, matrix->row[i]->len);
-                    galois_multiply_add_region(pkt->syms, matrix->message[i], quotient, pktsize);
-                    dec_ctx->operations += 1 + matrix->row[i]->len + pktsize;
-                    dec_ctx->ops1 += 1 + matrix->row[i]->len + pktsize;
-                } else {
-                    pivotfound = 1;
-                    pivot = i;
-                    break;
-                }
-            }
+        if (get_bit_in_array(matrix->erased, j) == 1) {
+            //find the decoded packet, mask it with this source packet
+            int src_id = dec_ctx->sc->gene[gid]->pktid[j];      // index of the corresponding source packet
+            mask_packet(dec_ctx, coe, src_id, pkt);
+        } else {
+            matrix->coefficient[r_rows][i] = coe;
+            i++;
         }
-        // cache as normal GNC packet
-        if (pivotfound == 1) {
-            matrix->row[pivot] = malloc(sizeof(struct row_vector));
-            matrix->row[pivot]->len = gensize - pivot;
-            matrix->row[pivot]->elem = malloc(sizeof(GF_ELEMENT) * matrix->row[pivot]->len);
-            memcpy(matrix->row[pivot]->elem, &(pkt_coes[pivot]), sizeof(GF_ELEMENT)*matrix->row[pivot]->len);
-            matrix->message[pivot] = malloc(sizeof(GF_ELEMENT) * pktsize);
-            memcpy(matrix->message[pivot], pkt->syms, pktsize*sizeof(GF_ELEMENT));
-            matrix->DoF_miss -= 1;
-        }
-        free(pkt_coes);
-        // 2, Check if the matrix is full rank, if yes, finish decode it
-        if (matrix->DoF_miss == 0) {
-            decode_generation(dec_ctx, gid); 
+    }
+    memcpy(matrix->message[r_rows], pkt->syms, sizeof(GF_ELEMENT)*dec_ctx->sc->params.size_p);
+    matrix->remaining_rows += 1;
+
+    //3, check if this class is full rank with at most MIN_DEG packets unknown
+    //
+    if (r_rows >= r_cols - 1) {
+        // perform forward substitution
+        long long flushing_ops = forward_substitute(r_rows+1, r_cols, dec_ctx->sc->params.size_p, matrix->coefficient, matrix->message);
+        dec_ctx->operations += flushing_ops;
+        dec_ctx->ops1 += flushing_ops;
+
+        // 4, check if the new packet is full rank, if yes, decode it, if not refresh the coefficient and message matrix anyway
+        int innovatives = 0;
+        for (j=0; j<r_cols; j++)
+            if (matrix->coefficient[j][j] != 0)
+                innovatives++;
+
+        if (innovatives != r_cols)
+            matrix->remaining_rows = innovatives;
+        else {
+            matrix->remaining_rows = matrix->remaining_cols;
+            decode_generation(dec_ctx, gid);
             if (get_loglevel() == TRACE)
                 printf("Entering perform_iterative_decoding...\n");
             perform_iterative_decoding(dec_ctx);
         }
-        if (dec_ctx->finished && get_loglevel() == TRACE) {
-            printf("GG splitted operations: %.2f %.2f\n",
-                    (double) dec_ctx->ops1/dec_ctx->sc->snum/dec_ctx->sc->params.size_p,
-                    (double) dec_ctx->ops2/dec_ctx->sc->snum/dec_ctx->sc->params.size_p);
-        }
-        return;
+    }
+    if (dec_ctx->finished && get_loglevel() == TRACE) {
+        printf("GG splitted operations: %.2f %.2f\n",
+                (double) dec_ctx->ops1/dec_ctx->sc->snum/dec_ctx->sc->params.size_p,
+                (double) dec_ctx->ops2/dec_ctx->sc->snum/dec_ctx->sc->params.size_p);
     }
 }
 
@@ -300,65 +264,48 @@ static void decode_generation(struct decoding_context_GG *dec_ctx, int gid)
     static char fname[] = "decode_generation";
     //printf("entering decoding_class()...\n");
     struct running_matrix *matrix = dec_ctx->Matrices[gid];
-    int gensize = dec_ctx->sc->params.size_g;
-    int pktsize = dec_ctx->sc->params.size_p;
-    int i, j, k;
-    GF_ELEMENT quotient;
-    for (i=gensize-1; i>=0; i--) {
-        if (get_bit_in_array(matrix->erased, i) == 1)
-            continue;
-        /* eliminate all nonzeros above diagonal elements from right to left*/
-        for (j=0; j<i; j++) {
-            int len = matrix->row[j]->len;
-            if (j+len <= i || matrix->row[j]->elem[i-j] == 0)
-                continue;
-            assert(matrix->row[i]->elem[0]);
-            quotient = galois_divide(matrix->row[j]->elem[i-j], matrix->row[i]->elem[0]);
-            galois_multiply_add_region(matrix->message[j], matrix->message[i], quotient, pktsize);
-            dec_ctx->operations += (pktsize + 1);
-            dec_ctx->ops1 += (pktsize + 1);
-            matrix->row[j]->elem[i-j] = 0;
-        }
-        // transform diagonals to 1
-        if (matrix->row[i]->elem[0] != 1) {
-            galois_multiply_region(matrix->message[i], galois_divide(1, matrix->row[i]->elem[0]), pktsize);
-            dec_ctx->operations += (pktsize + 1);
-            dec_ctx->ops1 += (pktsize + 1);
-            matrix->row[i]->elem[0] = 1;
-        }
-        set_bit_in_array(matrix->erased, i);
-    }
+    const int r_rows = matrix->remaining_rows;
+    const int r_cols = matrix->remaining_cols;
+    if (get_loglevel() == TRACE)
+        printf("%s %d: %d rows %d columns\n", fname, gid, r_rows, r_cols);
 
-    // Contruct decoded packets
+    int i, j, k;
+    // this class have enough linearly independent encoding vectors, and can be decoded completely
+    long long decoding_ops = back_substitute(r_rows, r_cols, dec_ctx->sc->params.size_p, matrix->coefficient, matrix->message);
+    dec_ctx->operations += decoding_ops;
+    dec_ctx->ops1 += decoding_ops;
+
+    // contruct decoded packets
     int c = 0;                                              // record number of decoded pacekts
-    int src_id;
-    for (i=0; i<gensize; i++) {
-        src_id = dec_ctx->sc->gene[gid]->pktid[i];
-        if (dec_ctx->sc->pp[src_id] != NULL) {
-            if (get_loglevel() == TRACE)
-                printf("%s: packet %d in subgeneration %d is already decoded.\n", fname, src_id, gid);
-            continue;
-        } else {
-            if ( (dec_ctx->sc->pp[src_id] = calloc(pktsize, sizeof(GF_ELEMENT))) == NULL )
-                fprintf(stderr, "%s: calloc sc->pp[%d]\n", fname, src_id);
-            memcpy(dec_ctx->sc->pp[src_id], matrix->message[i], sizeof(GF_ELEMENT)*pktsize);
-            if (get_loglevel() == TRACE)
-                printf("%s: packet %d decoded from generation %d\n", fname, src_id, gid);
-            // Record the decoded packet as a recently decoded packet
-            ID *new_id;
-            if ( (new_id = malloc(sizeof(ID))) == NULL )
-                fprintf(stderr, "%s: malloc new ID\n", fname);
-            new_id->data = src_id;
-            new_id->next = NULL;
-            append_to_list(dec_ctx->recent, new_id);
-            c += 1;
+    for (i=0; i<r_rows; i++) {
+        for (j=0; j<dec_ctx->sc->params.size_g; j++) {
+            // determine the index of each decoded packet
+            if (get_bit_in_array(matrix->erased, j) == 0) {
+                set_bit_in_array(matrix->erased, j);
+                int src_id = dec_ctx->sc->gene[gid]->pktid[j];
+                if (dec_ctx->sc->pp[src_id] != NULL) {
+                    if (get_loglevel() == TRACE)
+                        printf("%s: packet %d is already decoded.\n", fname, src_id);
+                    continue;
+                }
+                if ( (dec_ctx->sc->pp[src_id] = calloc(dec_ctx->sc->params.size_p, sizeof(GF_ELEMENT))) == NULL )
+                    fprintf(stderr, "%s: calloc sc->pp[%d]\n", fname, src_id);
+                memcpy(dec_ctx->sc->pp[src_id], matrix->message[i], sizeof(GF_ELEMENT)*dec_ctx->sc->params.size_p);
+                // Record the decoded packet as a recently decoded packet
+                ID *new_id;
+                if ( (new_id = malloc(sizeof(ID))) == NULL )
+                    fprintf(stderr, "%s: malloc new ID\n", fname);
+                new_id->data = src_id;
+                new_id->next = NULL;
+                append_to_list(dec_ctx->recent, new_id);
+                c += 1;
+                break;
+            }
         }
     }
     if (get_loglevel() == TRACE)
         printf("%s: %d packets decoded from generation %d\n", fname, c, gid);
-    free_running_matrix(matrix, gensize);
-    dec_ctx->Matrices[gid] = NULL;
-
+    matrix->remaining_rows = matrix->remaining_cols = 0;
     /* Record recent decoded generations */
     dec_ctx->newgpos = dec_ctx->newgpos % FB_THOLD;
     dec_ctx->grecent[dec_ctx->newgpos] = gid;
@@ -371,7 +318,7 @@ static void decode_generation(struct decoding_context_GG *dec_ctx, int gid)
 static void perform_iterative_decoding(struct decoding_context_GG *dec_ctx)
 {
     static char fname[] = "perform_iterative_decoding";
-    // Perform iterative decoding on the bipartite graph of LDPC precode
+    // Perform iterative precode decoding
     ID *new_decoded = dec_ctx->recent->first;
     while (new_decoded != NULL) {
         int new_id = new_decoded->data;
@@ -405,8 +352,10 @@ static void new_decoded_source_packet(struct decoding_context_GG *dec_ctx, int p
         dec_ctx->finished = 1;
         return;      // Don't need to worry about the remaining check packets
     }
-    // If the decoded packet is an original source packet back substitute it 
-    // into those known LDPC check packets
+    /*
+     * If the decoded packet comes from generations is an original source packet
+     * i.e., 0<= index < NUM_SRC, back substitute into those known LDPC check packets
+     */
     if (dec_ctx->sc->graph == NULL) {
         //no precode
         return;
@@ -425,11 +374,9 @@ static void new_decoded_source_packet(struct decoding_context_GG *dec_ctx, int p
         galois_multiply_add_region(dec_ctx->evolving_checks[check_id], dec_ctx->sc->pp[pkt_id], nb->ce, dec_ctx->sc->params.size_p);
         dec_ctx->operations += dec_ctx->sc->params.size_p;
         dec_ctx->ops2 += dec_ctx->sc->params.size_p;
-        dec_ctx->check_degrees[check_id] -= 1;    // reduce check packet's unknown degree
-        // We don't actually need to remove nodes from bipartite during iterative decoding. We already track
-        // the degree changes in evolving_packets and check_degrees. Leaving sc->graph intact is a better choice.
-        // if (remove_from_list(dec_ctx->sc->graph->l_nbrs_of_r[check_id], pkt_id) == -1)
-        //    fprintf(stderr, "%s: remove %d from l_nbrs_of_r[%d]\n", fname, pkt_id, check_id);
+        dec_ctx->check_degrees[check_id] -= 1;
+        if (remove_from_list(dec_ctx->sc->graph->l_nbrs_of_r[check_id], pkt_id) == -1)
+            fprintf(stderr, "%s: remove %d from l_nbrs_of_r[%d]\n", fname, pkt_id, check_id);
 
         nb = nb->next;
     }
@@ -460,9 +407,9 @@ static void new_decoded_check_packet(struct decoding_context_GG *dec_ctx, int pk
         dec_ctx->ops2 += dec_ctx->sc->params.size_p;
     }
 }
-
-// This function is part of iterative LDPC _precode_ decoding, which
-// checks for new recoverable source/check packet from parity-check packets.
+// This function is part of iterative precode decoding, which
+// checks for new recoverable source/check packet after new packets
+// are decoded from generations and processed accordingly.
 static int check_for_new_recoverables(struct decoding_context_GG *dec_ctx)
 {
     static char fname[] = "check_for_new_recoverables";
@@ -474,49 +421,45 @@ static int check_for_new_recoverables(struct decoding_context_GG *dec_ctx)
                 && dec_ctx->sc->pp[i+snum] != NULL
                 && !exist_in_list(dec_ctx->recent, i+snum)) {
             // The check packet is already decoded from some previous generations and its degree is
-            // reduced to 1, meaning that it connects to a unrecovered source neighboer. Let's find and recover this
-            // source neighbor. Note that there is at most 1 (i.e., 0 or 1) packet may be recovered from each check.
-            // So it is safe to break whenever a NULL pp is found (i.e., a packet not recovered yet)
-            int found = 0;
-            int pktid;
-            NBR_node *nb = dec_ctx->sc->graph->l_nbrs_of_r[i]->first;
-            while (nb != NULL) {
-                pktid = nb->data;
-                if (dec_ctx->sc->pp[pktid] == NULL) {
-                    found = 1;
-                    break;
+            // reduced to 1, meaning that it connects to a unrecovered source neighboer. Recover this
+            // source neighbor.
+            int src_id = dec_ctx->sc->graph->l_nbrs_of_r[i]->first->data;
+            if (dec_ctx->sc->pp[src_id] != NULL ) {
+                if (get_loglevel() == TRACE) { 
+                    if (exist_in_list(dec_ctx->recent, src_id))
+                        printf("%s: source packet %d is recoverable but is already in the recent list\n", fname, src_id);
+                    else
+                        printf("%s: source packet %d is already decoded\n", fname, src_id);
                 }
-                nb = nb->next;
+                dec_ctx->check_degrees[i] = 0;
+                continue;
             }
-            if (found) {
-                GF_ELEMENT ce = nb->ce;
-                if (get_loglevel() == TRACE)
-                    printf("%s: source packet %d is recovered from check %d\n", fname, pktid, i+snum);
-                dec_ctx->sc->pp[pktid] = calloc(dec_ctx->sc->params.size_p, sizeof(GF_ELEMENT));
-                if (dec_ctx->sc->pp[pktid] == NULL)
-                    fprintf(stderr, "%s: calloc sc->pp[%d]\n", fname, pktid);
-                if (ce == 1)
-                    memcpy(dec_ctx->sc->pp[pktid], dec_ctx->evolving_checks[i], sizeof(GF_ELEMENT)*dec_ctx->sc->params.size_p);
-                else {
-                    galois_multiply_add_region(dec_ctx->sc->pp[pktid], dec_ctx->evolving_checks[i], galois_divide(1, ce), dec_ctx->sc->params.size_p);
-                    dec_ctx->operations += dec_ctx->sc->params.size_p + 1;
-                    dec_ctx->ops2 += dec_ctx->sc->params.size_p + 1;
-                }
-                // Record the decoded packet as a recently decoded packet
-                ID *new_id;
-                if ( (new_id = malloc(sizeof(ID))) == NULL )
-                    fprintf(stderr, "%s: malloc new ID\n", fname);
-                new_id->data = pktid;
-                new_id->next = NULL;
-                append_to_list(dec_ctx->recent, new_id);
-                
+            if (get_loglevel() == TRACE)
+                printf("%s: source packet %d is recoverable from check %d\n", fname, src_id, i+snum);
+            dec_ctx->sc->pp[src_id] = calloc(dec_ctx->sc->params.size_p, sizeof(GF_ELEMENT));
+            if (dec_ctx->sc->pp[src_id] == NULL)
+                fprintf(stderr, "%s: calloc sc->pp[%d]\n", fname, src_id);
+            if (dec_ctx->sc->graph->l_nbrs_of_r[i]->first->ce == 1)
+                memcpy(dec_ctx->sc->pp[src_id], dec_ctx->evolving_checks[i], sizeof(GF_ELEMENT)*dec_ctx->sc->params.size_p);
+            else {
+                GF_ELEMENT ce = galois_divide(1, dec_ctx->sc->graph->l_nbrs_of_r[i]->first->ce);
+                galois_multiply_add_region(dec_ctx->sc->pp[src_id], dec_ctx->evolving_checks[i], ce, dec_ctx->sc->params.size_p);
+                dec_ctx->operations += dec_ctx->sc->params.size_p + 1;
+                dec_ctx->ops2 += dec_ctx->sc->params.size_p + 1;
             }
+            // Record the decoded packet as a recently decoded packet
+            ID *new_id;
+            if ( (new_id = malloc(sizeof(ID))) == NULL )
+                fprintf(stderr, "%s: malloc new ID\n", fname);
+            new_id->data = src_id;
+            new_id->next = NULL;
+            append_to_list(dec_ctx->recent, new_id);
             dec_ctx->check_degrees[i] = 0;
         }
         if (dec_ctx->sc->pp[i+snum] == NULL && dec_ctx->check_degrees[i] == 0) {
-            // The check packet is recovered because all of its source neighbors are known, so it is recoverable
+            // The check packet is recovered through its source neighbors
             if (get_loglevel() == TRACE)
-                printf("%s: check packet %d is recoverable after all the connecting source neighbors are known\n", fname, i+snum);
+                printf("%s: check packet %d is recoverable\n", fname, i+snum);
             dec_ctx->sc->pp[i+snum] = calloc(dec_ctx->sc->params.size_p, sizeof(GF_ELEMENT));
             if (dec_ctx->sc->pp[i+snum] == NULL)
                 fprintf(stderr, "%s: calloc sc->pp[%d]", fname, i+snum);
@@ -544,17 +487,14 @@ static void update_generations(struct decoding_context_GG *dec_ctx)
     while (precent != NULL) {
         int src_id = precent->data;
         // Check all generations that contain this source packet
-        ID *item = gene_nbr[src_id]->first;
-        while (item != NULL) {
-            int gid = item->data;
-            item = item->next;
-            if (dec_ctx->Matrices[gid] == NULL || dec_ctx->Matrices[gid]->DoF_miss == 0)
+        for (int i=0; i<dec_ctx->sc->gnum; i++) {
+            if (dec_ctx->Matrices[i]->remaining_cols == 0)
                 continue;
-            int pos = has_item(dec_ctx->sc->gene[gid]->pktid, src_id, dec_ctx->sc->params.size_g);
-            if (pos != -1
-                && get_bit_in_array(dec_ctx->Matrices[gid]->erased, pos) == 0) {
-                // The recently decoded packet is also in this generation
-                long ops = update_running_matrix(dec_ctx, gid, src_id, pos);
+            int pos = has_item(dec_ctx->sc->gene[i]->pktid, src_id, dec_ctx->sc->params.size_g);
+            if (pos != -1 
+                && get_bit_in_array(dec_ctx->Matrices[i]->erased, pos) == 0) {
+                // The recently decoded packet is not-yet decoded in the generation, mask it
+                long ops = update_running_matrix(dec_ctx, i, src_id, pos);
                 dec_ctx->operations += ops;
                 dec_ctx->ops2 += ops;
             }
@@ -565,98 +505,62 @@ static void update_generations(struct decoding_context_GG *dec_ctx)
     clear_list(dec_ctx->recent);
 }
 
-
-// Update running matrix with a decoded source packet
+/********************************************************
+ * updating running matrix with a decoded packet
+ *   gid - generation id of the matrix to be updated;
+ *   sid - packet id against which the matrix is updated;
+ *   index - column index the packet belongs to
+ *
+ *  decoded in other generation
+ *       |                             |
+ *       v                             v
+ *   
+ *   x x y a b c d         x x a b c d y
+ *   x x y x x x x         x x x x x x y
+ *   x x y x x x x         x x x x x x y
+ *   x x y x x x x     --> x x x x x x y
+ *   o o o o o o o         o o o o o o o
+ *   o o o o o o o         o o o o o o o
+ *   o o o o o o o         o o o o o o o
+ *********************************************************/
 static long update_running_matrix(struct decoding_context_GG *dec_ctx, int gid, int sid, int index)
 {
     static char fname[] = "update_running_matrix";
     //printf("entering update_running_matrix()...\n");
-    
-    // For each running matrix containing the just decoded packet [sid], a singleton vector will be
-    // placed in the matrix at the index's row, which corresponds to the position of the packet in 
-    // this subgeneration. All the nonzero vectors above this row will remove the corresponding column
-    // (i.e., set coding coefficient to 0). If there was a nonzero vector at the index's row, it will
-    // be replaced, and the previous row will be processed against rows below it, until it is placed
-    // in some zero vectors or being reduced to zero and discarded.
     int i, j, k;
     long operations = 0;
     struct running_matrix *matrix = dec_ctx->Matrices[gid];
-    int gensize = dec_ctx->sc->params.size_g;
-    int pktsize = dec_ctx->sc->params.size_p;
+    int r_rows = matrix->remaining_rows;
+    int r_cols = matrix->remaining_cols;
 
-    // 1) Process vectors above the index's row
-    GF_ELEMENT ce;
+    // 1, update coefficient matrix: erase one column
+    // index - the column position where the dec_pkt in the matrix
+    //
+    // Calculate how many packet remains unknown in front of the position index of this class
+    // move the erased column to the last column, move remaining columns behind forward
+    int count = 0;
     for (i=0; i<index; i++) {
-        if (matrix->row[i] != NULL 
-            && matrix->row[i]->len > (index-i)
-            && matrix->row[i]->elem[index-i] !=0) {
-            ce = matrix->row[i]->elem[index-i];
-            galois_multiply_add_region(matrix->message[i], dec_ctx->sc->pp[sid], ce, pktsize);
-            matrix->row[i]->elem[index-i] = 0;
+        if (get_bit_in_array(matrix->erased, i) == 0)
+            count += 1;
+    }
+    // Now the column of index "count" is the column corresponding to the decoded packet of ID "index"
+    for (j=count+1; j<r_cols; j++) {
+        for (k=0; k<r_rows; k++) {
+            GF_ELEMENT tmp = matrix->coefficient[k][j-1];
+            matrix->coefficient[k][j-1] = matrix->coefficient[k][j];
+            matrix->coefficient[k][j] = tmp;
         }
     }
-    
-    // 2) Place singleton vector to the index's row
-    GF_ELEMENT *coes = calloc(gensize, sizeof(GF_ELEMENT));
-    GF_ELEMENT *syms = calloc(pktsize, sizeof(GF_ELEMENT));
-    // Process the packet just as a normal received packet of the matrix
-    if (matrix->row[index] == NULL) {
-        // Just fill in the row with a singleton row and the decoded packet
-        matrix->row[index] = (struct row_vector*) malloc(sizeof(struct row_vector));
-        if (matrix->row[index] == NULL)
-            fprintf(stderr, "%s: malloc dec_ctx->row[%d] failed\n", fname, index);
-        matrix->row[index]->len = 1;
-        matrix->row[index]->elem = (GF_ELEMENT *) calloc(matrix->row[index]->len, sizeof(GF_ELEMENT));
-        if (matrix->row[index]->elem == NULL)
-            fprintf(stderr, "%s: calloc matrix->row[%d]->elem failed\n", fname, index);
-        matrix->row[index]->elem[0] = 1;
-        memcpy(matrix->message[index], dec_ctx->sc->pp[sid],  pktsize*sizeof(GF_ELEMENT));
-        matrix->DoF_miss -= 1;
-    } else {
-        // Let's do swap first, and leave a singleton vector at the row 
-        memcpy(coes+index, matrix->row[index]->elem, sizeof(GF_ELEMENT)*(gensize-index));
-        memset(matrix->row[index]->elem, 0, sizeof(GF_ELEMENT)*(gensize-index));
-        matrix->row[index]->len = 1;
-        matrix->row[index]->elem[0] = 1;
-        memcpy(syms, matrix->message[index], sizeof(GF_ELEMENT)*pktsize);
-        memcpy(matrix->message[index], dec_ctx->sc->pp[sid], sizeof(GF_ELEMENT)*pktsize);
-        // and then process the previous row as if it was a received vector
-        // process it against rows below the current row
-        int pivotfound = 0;
-        int pivot;
-        GF_ELEMENT quotient;
-        for (i=index; i<gensize; i++) {
-            if (coes[i] != 0) {
-                if (matrix->row[i] != NULL) {
-                    quotient = galois_divide(coes[i], matrix->row[i]->elem[0]);
-                    galois_multiply_add_region(&(coes[i]), matrix->row[i]->elem, quotient, matrix->row[i]->len);
-                    galois_multiply_add_region(syms, matrix->message[i], quotient, pktsize);
-                    dec_ctx->operations += 1 + matrix->row[i]->len + pktsize;
-                    dec_ctx->ops1 += 1 + matrix->row[i]->len + pktsize;
-                } else {
-                    pivotfound = 1;
-                    pivot = i;
-                    break;
-                }
-            }
-        }
-        // if pivot found, save it
-        if (pivotfound) {
-            matrix->row[pivot] = (struct row_vector*) malloc(sizeof(struct row_vector));
-            if (matrix->row[pivot] == NULL)
-                fprintf(stderr, "%s: malloc dec_ctx->row[%d] failed\n", fname, pivot);
-            matrix->row[pivot]->len = gensize - pivot;
-            matrix->row[pivot]->elem = (GF_ELEMENT *) calloc(matrix->row[pivot]->len, sizeof(GF_ELEMENT));
-            if (matrix->row[pivot]->elem == NULL)
-                fprintf(stderr, "%s: calloc matrix->row[%d]->elem failed\n", fname, pivot);
-            memcpy(matrix->row[pivot]->elem, &(coes[pivot]), matrix->row[pivot]->len*sizeof(GF_ELEMENT));
-            memcpy(matrix->message[pivot], syms,  pktsize*sizeof(GF_ELEMENT));
-            matrix->DoF_miss -= 1;
-        }
+    // 2, update the message matrix
+    for (i=0; i<r_rows; i++) {
+        GF_ELEMENT ce = matrix->coefficient[i][r_cols-1];   // the encoding coefficient of the column being erased
+        if (ce == 0)
+            continue;                                       // NOTE: in case the matrix is sparse, don't waste computation
+        galois_multiply_add_region(&matrix->message[i][0], dec_ctx->sc->pp[sid], ce, dec_ctx->sc->params.size_p);
+        operations += dec_ctx->sc->params.size_p;
     }
-    free(coes);
-    free(syms);
-    set_bit_in_array(matrix->erased, index);       // mark the corresponding column as erased
+    set_bit_in_array(matrix->erased, index);       // mark the column as erased
+    matrix->remaining_cols -= 1;
     return operations;
 }
 
@@ -669,12 +573,50 @@ static int check_for_new_decodables(struct decoding_context_GG *dec_ctx)
     int i, j, k;
     for (i=0; i<dec_ctx->sc->gnum; i++) {
         struct running_matrix *matrix = dec_ctx->Matrices[i];
-        if (matrix != NULL && matrix->DoF_miss == 0)
-            return i;
+        if ( matrix->remaining_cols != 0
+                && matrix->remaining_rows >= matrix->remaining_cols ) {
+            int r_rows = matrix->remaining_rows;
+            int r_cols = matrix->remaining_cols;
+            // perform forward substitution
+            int flushing_ops = forward_substitute(r_rows, r_cols, dec_ctx->sc->params.size_p, matrix->coefficient, matrix->message);
+            dec_ctx->operations += flushing_ops;
+            dec_ctx->ops1 += flushing_ops;
+
+            // check if the new packet is full rank, if yes, decode it, if not refresh the coefficient and message matrix anyway
+            int full_rank = 1;
+            int innovatives = 0;
+            for (j=0; j<r_cols; j++) {
+                if (matrix->coefficient[j][j] == 0)
+                    full_rank = 0;
+                else
+                    innovatives += 1;
+            }
+
+            if (full_rank == 0)
+                matrix->remaining_rows = innovatives;
+            else {
+                matrix->remaining_rows = matrix->remaining_cols;
+                if (get_loglevel() == TRACE)
+                    printf("%s: generation %d is decodable\n",fname, i);
+                return i;
+            }
+        }
     }
     return -1;
 }
 
+
+// mask the encoded packet with the decoded packet list
+// ce    - coefficient we use in masking
+// index - index of the decoded source packet we want to mask against ENC_pkt
+static void mask_packet(struct decoding_context_GG *dec_ctx, GF_ELEMENT ce, int index, struct snc_packet *enc_pkt)
+{
+    static char fname[] = "mask_packet";
+    galois_multiply_add_region(enc_pkt->syms, dec_ctx->sc->pp[index], ce, dec_ctx->sc->params.size_p);
+    dec_ctx->operations += dec_ctx->sc->params.size_p;
+    dec_ctx->ops1 += dec_ctx->sc->params.size_p;
+    return;
+}
 
 /**
  * Save a decoding context to a file
@@ -727,24 +669,13 @@ long save_dec_context_GG(struct decoding_context_GG *dec_ctx, const char *filepa
     filesize += fwrite(&dec_ctx->originals, sizeof(int), 1, fp);
     // Save running matrices
     for (i=0; i<dec_ctx->sc->gnum; i++) {
-        // Use a flag to indicate whether the matrix is freed
-        int mflag = dec_ctx->Matrices[i] == NULL ? 0 : 1;
-        filesize += fwrite(&mflag, sizeof(int), 1, fp);
-        if (mflag == 0)
-            continue;    // pass NULL matrices
-
-        filesize += fwrite(&dec_ctx->Matrices[i]->DoF_miss, sizeof(int), 1, fp);
+        filesize += fwrite(&dec_ctx->Matrices[i]->remaining_rows, sizeof(int), 1, fp);
+        filesize += fwrite(&dec_ctx->Matrices[i]->remaining_cols, sizeof(int), 1, fp);
         int nflags = ALIGN(dec_ctx->sc->params.size_g, 8);
         filesize += fwrite(dec_ctx->Matrices[i]->erased, 1, nflags, fp);
-        // Write rows of running matrix
-        for (j=0; j<gensize; j++) {
-            // Use a flag to indicate whether a row exist
-            int rowlen = dec_ctx->Matrices[i]->row[j] == NULL ? 0 : dec_ctx->Matrices[i]->row[j]->len;
-            filesize += fwrite(&rowlen, sizeof(int), 1, fp);
-            if (rowlen != 0) {
-                filesize += fwrite(dec_ctx->Matrices[i]->row[j]->elem, sizeof(GF_ELEMENT), rowlen, fp);
-                filesize += fwrite(dec_ctx->Matrices[i]->message[j], sizeof(GF_ELEMENT), pktsize, fp);
-            }
+        for (j=0; j<dec_ctx->Matrices[i]->remaining_rows; j++) {
+            filesize += fwrite(dec_ctx->Matrices[i]->coefficient[j], sizeof(GF_ELEMENT), gensize, fp);
+            filesize += fwrite(dec_ctx->Matrices[i]->message[j], sizeof(GF_ELEMENT), pktsize, fp);
         }
     }
     // Save recent ID_list
@@ -785,9 +716,6 @@ struct decoding_context_GG *restore_dec_context_GG(const char *filepath)
         fprintf(stderr, "malloc decoding_context_GG failed\n");
         return NULL;
     }
-    
-    build_subgen_nbr_list(dec_ctx->sc);
-
     // Restore decoding context from file
     fseek(fp, sizeof(int), SEEK_CUR);  // skip decoding_type field
     // Restore already decoded packets
@@ -815,30 +743,14 @@ struct decoding_context_GG *restore_dec_context_GG(const char *filepath)
     fread(&dec_ctx->originals, sizeof(int), 1, fp);
     // Restore running matrices
     // Note that running matrices' memory were already allocated in creating_dec_context
-    // If a matrix was freed in the previous stored decoder context, we need to free again 
-    // after restoring it.
-    int mflag;  // flag indicating whether a matrix was already freed when saving the decoder context
     for (i=0; i<dec_ctx->sc->gnum; i++) {
-        fread(&mflag, sizeof(int), 1, fp);
-        if (mflag == 0) {
-            free_running_matrix(dec_ctx->Matrices[i], sp.size_g);
-            continue;
-        }
-        fread(&dec_ctx->Matrices[i]->DoF_miss, sizeof(int), 1, fp);
+        fread(&dec_ctx->Matrices[i]->remaining_rows, sizeof(int), 1, fp);
+        fread(&dec_ctx->Matrices[i]->remaining_cols, sizeof(int), 1, fp);
         int nflags = ALIGN(dec_ctx->sc->params.size_g, 8);
         fread(dec_ctx->Matrices[i]->erased, 1, nflags, fp);
-        // read rows
-        for (j=0; j<sp.size_g; j++) {
-            int rowlen = 0;
-            fread(&rowlen, sizeof(int), 1, fp);
-            if (rowlen != 0) {
-                dec_ctx->Matrices[i]->row[j] = malloc(sizeof(struct row_vector));
-                dec_ctx->Matrices[i]->row[j]->len = rowlen;
-                dec_ctx->Matrices[i]->row[j]->elem = (GF_ELEMENT *) malloc(rowlen * sizeof(GF_ELEMENT));
-                fread(dec_ctx->Matrices[i]->row[j]->elem, sizeof(GF_ELEMENT), rowlen, fp);
-                dec_ctx->Matrices[i]->message[j] = (GF_ELEMENT *) malloc(sp.size_p * sizeof(GF_ELEMENT));
-                fread(dec_ctx->Matrices[i]->message[j], sizeof(GF_ELEMENT), sp.size_p, fp);
-            }
+        for (j=0; j<dec_ctx->Matrices[i]->remaining_rows; j++) {
+            fread(dec_ctx->Matrices[i]->coefficient[j], sizeof(GF_ELEMENT), sp.size_g, fp);
+            fread(dec_ctx->Matrices[i]->message[j], sizeof(GF_ELEMENT), sp.size_p, fp);
         }
     }
     // Restore recent ID_list
@@ -859,5 +771,3 @@ struct decoding_context_GG *restore_dec_context_GG(const char *filepath)
     fclose(fp);
     return dec_ctx;
 }
-
-

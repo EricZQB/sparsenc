@@ -9,6 +9,7 @@
 #include <string.h>
 #include <assert.h>
 #include <time.h>
+#include "bipartite.h"
 #include "sparsenc.h"
 
 /* log levels */
@@ -21,28 +22,8 @@
 #define GALOIS
 typedef unsigned char GF_ELEMENT;
 #endif
-typedef struct node      NBR_node;
-typedef struct node_list NBR_nodes;
-// node of singly linked list
-struct node {
-    int data;
-    GF_ELEMENT ce;     // coefficient associated with node's data (for bipartite graph)
-    struct node *next;
-};
-
-struct node_list {
-    struct node *first;
-    struct node *last;
-};
-
-// Bipartitle graph for LDPC code
-typedef struct bipartite_graph {
-    int         nleft;
-    int         nright;
-    int         binaryce;       // Whether coefficients of edges are 1 or higher order
-    NBR_nodes **l_nbrs_of_r;    // left side neighbours of right
-    NBR_nodes **r_nbrs_of_l;    // right side neighbours of left
-} BP_graph;
+typedef struct node      ID;
+typedef struct node_list ID_list;
 
 /**
  * Source packets are grouped into subsets, referred to as
@@ -67,6 +48,7 @@ struct snc_context {
     struct  bipartite_graph  *graph;
     GF_ELEMENT              **pp;       // Pointers to precoded source packets
     int                      *nccount;  // Count of coded packets generated from each subgeneration
+    int                       count;    // Count of total coded packets generated
 };
 
 
@@ -89,21 +71,29 @@ struct snc_context {
  *            .
  *            .
  *            .
+ *
+ * Systematic packet buffer (systematic code)
+ *        snc_packet
+ *             ^
+ *             |
+ * sysbuf[0] sysbuf[1] sysbuf[2] ... 
  */
 struct snc_buffer {
-    struct snc_parameters  params;  // Meta info of the code
-    int                    snum;    // Number of source packets
-    int                    cnum;    // Number of parity-check packets
-    int                    gnum;    // Number of subgenerations
-    int                    size;    // Number of bufferred packets of each subgeneration
-    int                    nemp;    // Number of non-empty subgeneration buffers
-    struct snc_packet   ***gbuf;    // Pointers to subgeneration buffers
-    int                   *nc;      // Number of currently buffered packets of each generation
-    int                   *pn;      // Positions to store next packet of each subgeneration
-    int                   *nsched;  // Number of scheduled times of each subgeneration
-    // This is used during systematic scheduling
-    int                   *prevuc;    // position of last scheduled uncoded packet
-    int                   *lastuc;  // position of last buffered uncoded packet
+    struct snc_parameters  params;      // Meta info of the code
+    int                    snum;        // Number of source packets
+    int                    cnum;        // Number of parity-check packets
+    int                    gnum;        // Number of subgenerations
+    int                    size;        // Number of bufferred packets of each subgeneration
+    int                    nemp;        // Number of non-empty subgeneration buffers
+    struct snc_packet   ***gbuf;        // Pointers to subgeneration buffers
+    int                   *nc;          // Number of currently buffered packets of each generation
+    int                   *pn;          // Positions to store next packet of each subgeneration
+    int                   *nsched;      // Number of scheduled times of each subgeneration
+    // Use if code in buffer is systematic
+    struct snc_packet    **sysbuf;      // Buffered uncoded packet (needed for systematic code)
+    int                    sysnum;      // number of buffered systematic packet
+    int                    sysptr;      // pointer of already scheduled systematic packet
+    int                    sys_sched;   // scheduled systematic packet index in sysbuf
 };
 
 /* Row vector of a matrix */
@@ -125,12 +115,10 @@ void clear_list(struct node_list *list);
 void free_list(struct node_list *list);
 unsigned char get_bit_in_array(unsigned char *coes, int i);
 void set_bit_in_array(unsigned char *coes, int i);
+ID_list **build_subgen_nbr_list(struct snc_context *sc);
+void free_subgen_nbr_list(struct snc_context *sc, ID_list **gene_nbr);
 //int snc_rand(void);
 //void snc_srand(unsigned int seed);
-/* bipartite.c */
-int number_of_checks(int snum, double r);
-int create_bipartite_graph(BP_graph *graph, int nleft, int nright);
-void free_bipartite_graph(BP_graph *graph);
 // mt19937ar.c
 void init_genrand(unsigned long s);
 unsigned long genrand_int32(void);

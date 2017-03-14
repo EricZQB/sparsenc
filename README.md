@@ -29,7 +29,7 @@ $ make sncDecoders
 and test using
 
 ```shell
-usage: ./sncDecoder code_t dec_t datasize pcrate size_b size_g size_p bpc bnc sys
+usage: ./sncDecoders code_t dec_t datasize pcrate size_b size_g size_p bpc bnc sys
                        code_t   - RAND, BAND, WINDWRAP
                        dec_t    - GG, OA, BD, CBD, PP
                        datasize - Number of bytes
@@ -42,7 +42,19 @@ usage: ./sncDecoder code_t dec_t datasize pcrate size_b size_g size_p bpc bnc sy
                        sys      - Systematic code (0 or 1)
 ```
 
-Please see `makefile` for other available examples.
+To test the code over example networks, run
+
+```
+$ make sncRecoders-n-Hop
+```
+
+for using network codes over an n-hop line network where intermediate nodes perform on-the-fly recoding, and 
+
+```
+$ make sncRecoderFly
+```
+
+for sending the codes over a butterfly network. Please see main functions under `examples/xxx.c` for details and `makefile` for other available examples.
 
 Limitation
 ============

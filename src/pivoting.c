@@ -111,7 +111,6 @@ long pivot_matrix_oneround(int nrow, int ncolA, int ncolB, GF_ELEMENT **A, GF_EL
 {
     int i, j, k;
     long operations = 0;
-    // First pivoting: inactivation
     ssList *row_pivots = malloc(sizeof(ssList));
     ssList *col_pivots = malloc(sizeof(ssList));
     row_pivots->ssFirst = row_pivots->ssLast = NULL;
@@ -131,7 +130,7 @@ long pivot_matrix_oneround(int nrow, int ncolA, int ncolB, GF_ELEMENT **A, GF_EL
         printf("A total of %d/%d columns are inactivated.\n", ias, ncolA);
         stop_pivoting = clock();
         pivoting_time = ((double) (stop_pivoting - start_pivoting)) / CLOCKS_PER_SEC;
-        printf("Inactivation pivoting consumed time: %.2f seconds.\n", pivoting_time);
+        printf("Inactivation pivoting consumed time: %.6f seconds.\n", pivoting_time);
     }
 
     // Save orders of row/column indices after pivoting
@@ -150,12 +149,31 @@ long pivot_matrix_oneround(int nrow, int ncolA, int ncolB, GF_ELEMENT **A, GF_EL
     free_subscriptList(row_pivots);
     free_subscriptList(col_pivots);
 
-    // Doesn't need to physically swap row/col after pivoting. 
-    // Perform all operations on the original matrix with the help of the mappings 
+    // Diagonalize active part
+    // Don't physically swap row/col. Perform all operations on the original matrix with the help of the mappings 
+    // To save random access time, we still need to make a copy of the top-right (nColA-ias) x ias matrix U.
+    GF_ELEMENT **U = calloc(ncolA-ias, sizeof(GF_ELEMENT*));
+    for (i=0; i<ncolA-ias; i++) {
+        U[i] = calloc(ias, sizeof(GF_ELEMENT));
+        for (j=0; j<ias; j++)
+            U[i][j] = A[ctoo_r[i]][ctoo_c[ncolA-ias+j]];
+    }
+    // And also make a copy of the bottom-right (ias x ias) matrix T.
+    // This kind of copy is a tradeoff between memory usage and access time. 
+    GF_ELEMENT **T = calloc(ias, sizeof(GF_ELEMENT*));
+    for (i=0; i<ias; i++){
+        T[i] = calloc(ias, sizeof(GF_ELEMENT));
+        for (j=0; j<ias; j++)
+            T[i][j] = A[ctoo_r[ncolA-ias+i]][ctoo_c[ncolA-ias+j]];
+    }
+    // Start to diagonalize
+    clock_t start_p, stop_p;
+    start_p = clock();
     long long ops1=0;
     GF_ELEMENT quotient;
+    nonzeros = 0;
     for (i=0; i<ncolA-ias; i++) {
-        for (j=i+1; j<nrow; j++) {
+        for (j=i+1; j<ncolA; j++) {
             if (A[ctoo_r[i]][ctoo_c[i]] == 0 && get_loglevel() == TRACE)
                 printf("The diagonal element after re-ordering is nonzero.\n");
             // process the item on (j, i)
@@ -163,61 +181,86 @@ long pivot_matrix_oneround(int nrow, int ncolA, int ncolB, GF_ELEMENT **A, GF_EL
                 quotient = galois_divide(A[ctoo_r[j]][ctoo_c[i]], A[ctoo_r[i]][ctoo_c[i]]);
                 ops1 += 1;
                 // multiply-and-add the corresponding part in the inactive part
-                for (k=ncolA-ias; k<ncolA; k++)
-                    A[ctoo_r[j]][ctoo_c[k]] = galois_add(A[ctoo_r[j]][ctoo_c[k]], galois_multiply(A[ctoo_r[i]][ctoo_c[k]], quotient));
-                ops1 += ias;    // This part of matrix in processing is lower triangular in part, so operations only needed in the back
+                if (j < ncolA-ias) {
+                    // eliminating nonzeros in the first ncolA-ias rows (but below diagonal)
+                    galois_multiply_add_region(U[j], U[i], quotient, ias);
+                } else {
+                    // eliminating nonzeros in the last ias rows
+                    galois_multiply_add_region(T[j-(ncolA-ias)], U[i], quotient, ias);
+                }
+                ops1 += ias;    // This part of matrix in processing is lower triangular in part, so operations only needed in the back half (i.e., inactiavted part)
                 // simultaneously do the same thing on right matrix B
                 galois_multiply_add_region(B[ctoo_r[j]], B[ctoo_r[i]], quotient, ncolB);
                 ops1 += ncolB;
                 A[ctoo_r[j]][ctoo_c[i]] = 0;            // eliminate the item
+                nonzeros += 1;
             }
         }
     }
+    stop_p = clock();
+    if (get_loglevel() == TRACE) {
+        printf("Diagonalize active part (%lld nonzero elements) after inactivating %d took %.6f seconds, cost %lld operations.\n", nonzeros, ias, ((double) (stop_p-start_p))/CLOCKS_PER_SEC, ops1);
+    }
     operations += ops1;
 
+    // Copy U and T back, free U but keep T for forward substitution
+    for (i=0; i<ncolA-ias; i++) {
+        for (j=0; j<ias; j++)
+            A[ctoo_r[i]][ctoo_c[ncolA-ias+j]] = U[i][j];
+        free(U[i]);
+    }
+    free(U);
+    for (i=0; i<ias; i++) {
+        for (j=0; j<ias; j++)
+            A[ctoo_r[ncolA-ias+i]][ctoo_c[ncolA-ias+j]] = T[i][j];
+    }
+
     /* Perform forward substitution on the ias x ias dense inactivated matrix. */
+    start_p = clock();
+    /*
     if (get_loglevel() == TRACE) {
         nonzeros = 0;
         total = 0;
-        for (i=ncolA-ias; i<nrow; i++) {
-            for (j=ncolA-ias; j<ncolA; j++) {
+        for (i=0; i<ias; i++) {
+            for (j=0; j<ias; j++) {
                 total++;
-                if (A[ctoo_r[i]][ctoo_c[j]] != 0)
+                if (T[i][j] != 0)
                     nonzeros++;
             }
         }
         printf("Current percentage of nonzeros of the sub-matrix: %.2f%%\n", (double) nonzeros/total*100);
         printf("Perform forward substitution on the square sub-matrix of size: %d x %d\n", ias, ias);
     }
-    // Make a copy of ces and msg matrices on which forward substitution to be performed.
-    // Making a copy is for easier access during forward substitution
-    GF_ELEMENT **ces_submatrix = calloc(ias+nrow-ncolA, sizeof(GF_ELEMENT*));
-    GF_ELEMENT **msg_submatrix = calloc(ias+nrow-ncolA, sizeof(GF_ELEMENT*));
-    for (i=0; i<ias+nrow-ncolA; i++){
-        ces_submatrix[i] = calloc(ias, sizeof(GF_ELEMENT));
+    */
+    // Make a copy of the corresponding msg matrices of T before performing forward substitution. 
+    GF_ELEMENT **msg_submatrix = calloc(ias, sizeof(GF_ELEMENT*));
+    for (i=0; i<ias; i++){
         msg_submatrix[i] = calloc(ncolB, sizeof(GF_ELEMENT));
-        for (j=0; j<ias; j++)
-            ces_submatrix[i][j] = A[ctoo_r[ncolA-ias+i]][ctoo_c[ncolA-ias+j]];
         memcpy(msg_submatrix[i], B[ctoo_r[ncolA-ias+i]], ncolB*sizeof(GF_ELEMENT));
     }
 
-    long long ops = forward_substitute(ias+nrow-ncolA, ias, ncolB, ces_submatrix, msg_submatrix);
+    long long ops = forward_substitute(ias, ias, ncolB, T, msg_submatrix);
     operations += ops;
     // Save the processed inactivated part back to A
-    for (i=0; i<ias+nrow-ncolA; i++) {
+    for (i=0; i<ias; i++) {
         for (j=0; j<ias; j++)
-            A[ctoo_r[ncolA-ias+i]][ctoo_c[ncolA-ias+j]] = ces_submatrix[i][j];
+            A[ctoo_r[ncolA-ias+i]][ctoo_c[ncolA-ias+j]] = T[i][j];
         memcpy(B[ctoo_r[ncolA-ias+i]], msg_submatrix[i], ncolB*sizeof(GF_ELEMENT));
     }
 
-    //free ces_submatrix, msg_submatrix
-    for (i=0; i<ias+nrow-ncolA; i++) {
-        free(ces_submatrix[i]);
+    //free T, msg_submatrix
+    for (i=0; i<ias; i++) {
+        free(T[i]);
         free(msg_submatrix[i]);
     }
-    free(ces_submatrix);
+    free(T);
     free(msg_submatrix);
+    stop_p = clock();
+    if (get_loglevel() == TRACE) {
+        printf("Forward substitution on the bottom-right part took %.6f seconds, cost %lld operations\n", ((double) (stop_p-start_p))/CLOCKS_PER_SEC, ops);
+    }
 
+    /*
     if (get_loglevel() == TRACE) {
         int missing_pivots = 0;
         for (i=0; i<ncolA; i++) {
@@ -226,10 +269,10 @@ long pivot_matrix_oneround(int nrow, int ncolA, int ncolB, GF_ELEMENT **A, GF_EL
         }
         printf("There are %d pivots missing after forward substitution\n", missing_pivots);
     }
+    */
 
     return operations;
 }
-
 
 /********************************************************************************
  *
@@ -264,7 +307,7 @@ long pivot_matrix_tworound(int nrow, int ncolA, int ncolB, GF_ELEMENT **A, GF_EL
         printf("A total of %d/%d columns are inactivated.\n", ias, ncolA);
         stop_pivoting = clock();
         pivoting_time = ((double) (stop_pivoting - start_pivoting)) / CLOCKS_PER_SEC;
-        printf("Inactivation pivoting consumed time: %.2f seconds.\n", pivoting_time);
+        printf("Inactivation pivoting consumed time: %.6f seconds.\n", pivoting_time);
     }
 
     // Save orders of row/column indices after pivoting
@@ -283,12 +326,31 @@ long pivot_matrix_tworound(int nrow, int ncolA, int ncolB, GF_ELEMENT **A, GF_EL
     free_subscriptList(row_pivots);
     free_subscriptList(col_pivots);
 
-
+    // Diagonalize active part
     // Don't physically swap row/col. Perform all operations on the original matrix with the help of the mappings 
+    // To save random access time, we still need to make a copy of the top-right (nColA-ias) x ias matrix U.
+    GF_ELEMENT **U = calloc(ncolA-ias, sizeof(GF_ELEMENT*));
+    for (i=0; i<ncolA-ias; i++) {
+        U[i] = calloc(ias, sizeof(GF_ELEMENT));
+        for (j=0; j<ias; j++)
+            U[i][j] = A[ctoo_r[i]][ctoo_c[ncolA-ias+j]];
+    }
+    // And also make a copy of the bottom-right (ias x ias) matrix T.
+    // This kind of copy is a tradeoff between memory usage and access time. 
+    GF_ELEMENT **T = calloc(ias, sizeof(GF_ELEMENT*));
+    for (i=0; i<ias; i++){
+        T[i] = calloc(ias, sizeof(GF_ELEMENT));
+        for (j=0; j<ias; j++)
+            T[i][j] = A[ctoo_r[ncolA-ias+i]][ctoo_c[ncolA-ias+j]];
+    }
+    // Start to diagonalize
+    clock_t start_p, stop_p;
+    start_p = clock();
     long long ops1=0;
     GF_ELEMENT quotient;
+    nonzeros = 0;
     for (i=0; i<ncolA-ias; i++) {
-        for (j=i+1; j<nrow; j++) {
+        for (j=i+1; j<ncolA; j++) {
             if (A[ctoo_r[i]][ctoo_c[i]] == 0 && get_loglevel() == TRACE)
                 printf("The diagonal element after re-ordering is nonzero.\n");
             // process the item on (j, i)
@@ -296,27 +358,41 @@ long pivot_matrix_tworound(int nrow, int ncolA, int ncolB, GF_ELEMENT **A, GF_EL
                 quotient = galois_divide(A[ctoo_r[j]][ctoo_c[i]], A[ctoo_r[i]][ctoo_c[i]]);
                 ops1 += 1;
                 // multiply-and-add the corresponding part in the inactive part
-                for (k=ncolA-ias; k<ncolA; k++)
-                    A[ctoo_r[j]][ctoo_c[k]] = galois_add(A[ctoo_r[j]][ctoo_c[k]], galois_multiply(A[ctoo_r[i]][ctoo_c[k]], quotient));
-                ops1 += ias;    // This part of matrix in processing is lower triangular in part, so operations only needed in the back
+                if (j < ncolA-ias) {
+                    // eliminating nonzeros in the first ncolA-ias rows (but below diagonal)
+                    galois_multiply_add_region(U[j], U[i], quotient, ias);
+                } else {
+                    // eliminating nonzeros in the last ias rows
+                    galois_multiply_add_region(T[j-(ncolA-ias)], U[i], quotient, ias);
+                }
+                ops1 += ias;    // This part of matrix in processing is lower triangular in part, so operations only needed in the back half (i.e., inactiavted part)
                 // simultaneously do the same thing on right matrix B
                 galois_multiply_add_region(B[ctoo_r[j]], B[ctoo_r[i]], quotient, ncolB);
                 ops1 += ncolB;
                 A[ctoo_r[j]][ctoo_c[i]] = 0;            // eliminate the item
+                nonzeros += 1;
             }
         }
     }
+    stop_p = clock();
+    if (get_loglevel() == TRACE) {
+        printf("Diagonalize active part (%lld nonzero elements) after inactivating %d took %.6f seconds, cost %lld operations.\n", nonzeros, ias, ((double) (stop_p-start_p))/CLOCKS_PER_SEC, ops1);
+    }
     operations += ops1;
 
-    // Second round of pivoting
-
-    // Make a copy of the lower square submatrix of the inactive part
-    GF_ELEMENT **ces_submatrix = calloc(ias+nrow-ncolA, sizeof(GF_ELEMENT*));
-    for (i=0; i<ias+nrow-ncolA; i++){
-        ces_submatrix[i] = calloc(ias, sizeof(GF_ELEMENT));
+    // Copy U and T back, free U but keep T as it is still needed for further pivoting
+    for (i=0; i<ncolA-ias; i++) {
         for (j=0; j<ias; j++)
-            ces_submatrix[i][j] = A[ctoo_r[ncolA-ias+i]][ctoo_c[ncolA-ias+j]];
+            A[ctoo_r[i]][ctoo_c[ncolA-ias+j]] = U[i][j];
+        free(U[i]);
     }
+    free(U);
+    for (i=0; i<ias; i++) {
+        for (j=0; j<ias; j++)
+            A[ctoo_r[ncolA-ias+i]][ctoo_c[ncolA-ias+j]] = T[i][j];
+    }
+
+    // Second round of pivoting
     // Zlatev pivoting on (ias x ias) matrix
     ssList *row_pivots_2nd = malloc(sizeof(ssList));
     ssList *col_pivots_2nd = malloc(sizeof(ssList));
@@ -326,11 +402,11 @@ long pivot_matrix_tworound(int nrow, int ncolA, int ncolB, GF_ELEMENT **A, GF_EL
         printf("Zlatev pivoting...\n");
         start_pivoting = clock();
     }
-    int ias_2nd = zlatev_pivoting(ias+nrow-ncolA, ias, ces_submatrix, row_pivots_2nd, col_pivots_2nd);
+    int ias_2nd = zlatev_pivoting(ias, ias, T, row_pivots_2nd, col_pivots_2nd);
     if (get_loglevel() == TRACE) {
         stop_pivoting = clock();
         pivoting_time = ((double) (stop_pivoting - start_pivoting)) / CLOCKS_PER_SEC;
-        printf("Zlatev pivoting consumed time: %.2f seconds.\n", pivoting_time);
+        printf("Zlatev pivoting consumed time: %.6f seconds.\n", pivoting_time);
     }
     // Update row/col mappings
     int *partial_r = (int *) calloc(ias, sizeof(int));  // partial arrays are allocated to avoid corrupting the original ctoo_ arrays
@@ -351,46 +427,53 @@ long pivot_matrix_tworound(int nrow, int ncolA, int ncolB, GF_ELEMENT **A, GF_EL
     free(partial_c);
 
     /* Perform forward substitution on the ias x ias dense inactivated matrix. */
+    start_p = clock();
+    /*
     if (get_loglevel() == TRACE) {
         nonzeros = 0;
         total = 0;
-        for (i=ncolA-ias; i<nrow; i++) {
-            for (j=ncolA-ias; j<ncolA; j++) {
+        for (i=0; i<ias; i++) {
+            for (j=0; j<ias; j++) {
                 total++;
-                if (A[ctoo_r[i]][ctoo_c[j]] != 0)
+                if (T[i][j] != 0)
                     nonzeros++;
             }
         }
         printf("Current percentage of nonzeros of the sub-matrix: %.2f%%\n", (double) nonzeros/total*100);
         printf("Perform forward substitution on the square sub-matrix of size: %d x %d\n", ias, ias);
     }
-    // Make a copy of ces and msg matrices on which forward substitution to be performed.
-    // Making a copy is for easier access during forward substitution
-    GF_ELEMENT **msg_submatrix = calloc(ias+nrow-ncolA, sizeof(GF_ELEMENT*));
-    for (i=0; i<ias+nrow-ncolA; i++){
+    */
+    // Make a copy of the corresponding msg matrices of T before performing forward substitution. 
+    GF_ELEMENT **msg_submatrix = calloc(ias, sizeof(GF_ELEMENT*));
+    for (i=0; i<ias; i++){
         msg_submatrix[i] = calloc(ncolB, sizeof(GF_ELEMENT));
         for (j=0; j<ias; j++)
-            ces_submatrix[i][j] = A[ctoo_r[ncolA-ias+i]][ctoo_c[ncolA-ias+j]];  // re-use allocated memory, but data needs refresh because ctoo_r/ctoo_c were updated
+            T[i][j] = A[ctoo_r[ncolA-ias+i]][ctoo_c[ncolA-ias+j]];  // reuse allocated memory, but data needs refresh because ctoo_r/ctoo_c were updated
         memcpy(msg_submatrix[i], B[ctoo_r[ncolA-ias+i]], ncolB*sizeof(GF_ELEMENT));
     }
 
-    long long ops = forward_substitute(ias+nrow-ncolA, ias, ncolB, ces_submatrix, msg_submatrix);
+    long long ops = forward_substitute(ias, ias, ncolB, T, msg_submatrix);
     operations += ops;
     // Save the processed inactivated part back to A
-    for (i=0; i<ias+nrow-ncolA; i++) {
+    for (i=0; i<ias; i++) {
         for (j=0; j<ias; j++)
-            A[ctoo_r[ncolA-ias+i]][ctoo_c[ncolA-ias+j]] = ces_submatrix[i][j];
+            A[ctoo_r[ncolA-ias+i]][ctoo_c[ncolA-ias+j]] = T[i][j];
         memcpy(B[ctoo_r[ncolA-ias+i]], msg_submatrix[i], ncolB*sizeof(GF_ELEMENT));
     }
 
-    //free ces_submatrix, msg_submatrix
-    for (i=0; i<ias+nrow-ncolA; i++) {
-        free(ces_submatrix[i]);
+    //free T, msg_submatrix
+    for (i=0; i<ias; i++) {
+        free(T[i]);
         free(msg_submatrix[i]);
     }
-    free(ces_submatrix);
+    free(T);
     free(msg_submatrix);
+    stop_p = clock();
+    if (get_loglevel() == TRACE) {
+        printf("Forward substitution on the bottom-right part took %.6f seconds, cost %lld operations\n", ((double) (stop_p-start_p))/CLOCKS_PER_SEC, ops);
+    }
 
+    /*
     if (get_loglevel() == TRACE) {
         int missing_pivots = 0;
         for (i=0; i<ncolA; i++) {
@@ -399,7 +482,7 @@ long pivot_matrix_tworound(int nrow, int ncolA, int ncolB, GF_ELEMENT **A, GF_EL
         }
         printf("There are %d pivots missing after forward substitution\n", missing_pivots);
     }
-
+    */
     return operations;
 }
 

@@ -8,6 +8,11 @@
 static int schedule_recode_generation(struct snc_buffer *buf, int sched_t);
 static int banded_nonuniform_sched(struct snc_buffer *buf);
 
+// Needed for buffering systematic codes
+static struct snc_context *sc;          // encoding context duplicated at the recoder
+static ID_list **gene_nbr = NULL;       // Lists of subgen neighbors of each packet
+                                        // Needed if snc is systematic
+
 struct snc_buffer *snc_create_buffer(struct snc_parameters *sp, int bufsize)
 {
     static char fname[] = "snc_create_decoder";
@@ -55,16 +60,15 @@ struct snc_buffer *snc_create_buffer(struct snc_parameters *sp, int bufsize)
         goto Error;
     }
     if (sp->sys == 1) {
-        if ((buf->prevuc = malloc(buf->gnum*sizeof(int))) == NULL) {
-            fprintf(stderr, "%s: calloc buf->prevuc\n", fname);
+        // allocate buffer for uncoded packets
+        if ((buf->sysbuf = calloc(buf->snum, sizeof(struct snc_packet *))) == NULL){
+            fprintf(stderr, "%s: calloc buf->sysbuf\n", fname);
             goto Error;
         }
-        memset(buf->prevuc, -1, buf->gnum*sizeof(int));
-        if ((buf->lastuc = malloc(buf->gnum*sizeof(int))) == NULL) {
-            fprintf(stderr, "%s: calloc buf->lastuc\n", fname);
-            goto Error;
-        }
-        memset(buf->lastuc, -1, buf->gnum*sizeof(int));
+        buf->sysnum = 0;
+        buf->sysptr = 0;
+        sc = snc_create_enc_context(NULL, sp);  //encoding context is needed for systematic forwarding/recoding
+        gene_nbr = build_subgen_nbr_list(sc);
     }
     return buf;
 
@@ -88,67 +92,70 @@ Error:
 void snc_buffer_packet(struct snc_buffer *buf, struct snc_packet *pkt)
 {
     int gid = pkt->gid;
+    if (gid == -1 && pkt->ucid != -1) {
+        // This is a systematic packet
+        buf->sysbuf[buf->sysnum] = pkt;
+        buf->sysnum += 1;
+        // Count the packet as a received packet for each subgen containing it
+        ID *item = gene_nbr[pkt->ucid]->first;
+        while (item != NULL) {
+            gid = item->data;
+            if (buf->nc[gid] == 0)
+                buf->nemp++;
+            buf->nc[gid]++;
+            item = item->next;
+        }
+        return;
+    }
     if (buf->nc[gid] == 0) {
-        /* Buffer of the generation is empty */
+        // Buffer of the generation is empty
         buf->gbuf[gid][0] = pkt;
         buf->nc[gid]++;
         buf->nemp++;
     } else if (buf->nc[gid] == buf->size) {
-        /* Buffer of the generation is full, FIFO */
+        // Buffer of the generation is full, remove in a FIFO manner
         snc_free_packet(buf->gbuf[gid][buf->pn[gid]]);  //discard packet previously stored in the position
         buf->gbuf[gid][buf->pn[gid]] = pkt;
     } else {
-        /* Buffer is neither empty nor full */
+        // Buffer is neither empty nor full
         buf->gbuf[gid][buf->pn[gid]] = pkt;
         buf->nc[gid]++;
     }
-    if (pkt->ucid != -1)
-        buf->lastuc[gid] = buf->pn[gid];  // If this is an uncoded packet, record its location in buffer
-    buf->pn[gid] = (buf->pn[gid] + 1) % buf->size;  //update position for next incoming packet
+    // Update position for next incoming coded packets
+    buf->pn[gid] = (buf->pn[gid] + 1) % buf->size;
     return;
 }
 
-// FIXME: This function has not been revised accordingly after I introduced RAND_SYS and MLPI_SYS
-//        scheduling algorithms into sparsenc.
 struct snc_packet *snc_recode_packet(struct snc_buffer *buf, int sched_t)
 {
-    int gid = schedule_recode_generation(buf, sched_t);
-    if (gid == -1)
-        return NULL;
-
     struct snc_packet *pkt = snc_alloc_empty_packet(&buf->params);
     if (pkt == NULL)
         return NULL;
 
-    pkt->gid = gid;
-    GF_ELEMENT co = 0;
-    for (int i=0; i<buf->nc[gid]; i++) {
-        /* Coding coefficients of bufferred packets are coded together */
-        if (buf->params.bnc == 1) {
-            co = rand() % 2;
-            if (co == 1)
-                galois_multiply_add_region(pkt->coes, buf->gbuf[gid][i]->coes, co, ALIGN(buf->params.size_g, 8));
-        } else {
-            co = rand() % (1 << 8);
-            galois_multiply_add_region(pkt->coes, buf->gbuf[gid][i]->coes, co, buf->params.size_g);
-        }
-        galois_multiply_add_region(pkt->syms, buf->gbuf[gid][i]->syms, co, buf->params.size_p);
-    }
+    if (snc_recode_packet_im(buf, pkt, sched_t) == 0)
+        return pkt;
+    else
+        return NULL;
     return pkt;
 }
 
-int snc_recode_packet_im(struct snc_buffer *buf, struct snc_packet *pkt, int in_sched_t)
+int snc_recode_packet_im(struct snc_buffer *buf, struct snc_packet *pkt, int sched_t)
 {
-    int sched_t = in_sched_t;
-    if (buf->params.sys != 1) {
-        if (in_sched_t == RAND_SCHED_SYS)
-            sched_t = RAND_SCHED;
-        if (in_sched_t == MLPI_SCHED_SYS)
-            sched_t = MLPI_SCHED;
-    }
+
     int gid = schedule_recode_generation(buf, sched_t);
     if (gid == -1)
         return -1;
+
+    if (gid == buf->gnum) {
+        // A systematic packet is scheduled
+        pkt->gid = -1;
+        pkt->ucid = buf->sysbuf[buf->sys_sched]->ucid;
+        memset(pkt->syms, 0, sizeof(GF_ELEMENT)*buf->params.size_p);
+        memcpy(pkt->syms, buf->sysbuf[buf->sys_sched]->syms, sizeof(GF_ELEMENT)*buf->params.size_p);
+        return 0;
+    }
+
+    // Generate a normal recoded GNC packet
     pkt->gid = gid;
     pkt->ucid = -1;
     // Clean up pkt
@@ -158,23 +165,33 @@ int snc_recode_packet_im(struct snc_buffer *buf, struct snc_packet *pkt, int in_
         memset(pkt->coes, 0, buf->params.size_g*sizeof(GF_ELEMENT));
     }
     memset(pkt->syms, 0, sizeof(GF_ELEMENT)*buf->params.size_p);
-    if ((sched_t == RAND_SCHED_SYS || sched_t == MLPI_SCHED_SYS) && 
-            buf->prevuc[gid] != buf->lastuc[gid]) {
-        // There was a new uncoded packets received, forward it
-        // printf("Forwarding an uncoded packet...\n");
-        // printf("gid=%d, prevuc=%d, lastuc=%d, nccount=%d\n", gid, buf->prevuc[gid], buf->lastuc[gid], buf->nc[gid]);
-        pkt->ucid = buf->gbuf[gid][buf->lastuc[gid]]->ucid;
-        if (buf->params.bnc) {
-            memcpy(pkt->coes, buf->gbuf[gid][buf->lastuc[gid]]->coes, ALIGN(buf->params.size_g, 8)*sizeof(GF_ELEMENT));
-        } else {
-            memcpy(pkt->coes, buf->gbuf[gid][buf->lastuc[gid]]->coes, buf->params.size_g*sizeof(GF_ELEMENT));
-        }
-        memcpy(pkt->syms, buf->gbuf[gid][buf->lastuc[gid]]->syms, buf->params.size_p*sizeof(GF_ELEMENT));
-        buf->prevuc[gid] = buf->lastuc[gid];
-        return 0;
-    }
     GF_ELEMENT co = 0;
-    for (int i=0; i<buf->nc[gid]; i++) {
+    int i;
+    // First, go through systematic packet list, combine those belonging to the shceduled generation
+    int ucnum = 0;  // num of systematic packets belonging to this gid
+    for (i=0; i<buf->sysnum; i++) {
+        if (!exist_in_list(gene_nbr[buf->sysbuf[i]->ucid], gid))
+            continue;            // skip packets not belong to gid
+        // Find the sys packet's corresponding index in the generation.
+        // If buf->sysbuf[i]->ucid doesn't belong to the generation, skip.
+        int relative_idx = has_item(sc->gene[gid]->pktid, buf->sysbuf[i]->ucid, sc->params.size_g); 
+        if (relative_idx == -1)
+            continue;
+        ucnum += 1;
+        if (sc->params.bnc) {
+            co = (GF_ELEMENT) rand() % 2;                   // Binary network code
+            if (co == 1)
+                set_bit_in_array(pkt->coes, relative_idx);  // Set the corresponding coefficient as 1
+        } else {
+            co = (GF_ELEMENT) rand() % (1 << 8);     // Randomly generated coding coefficient
+            pkt->coes[relative_idx] = co;
+        }
+        galois_multiply_add_region(pkt->syms, buf->sysbuf[i]->syms, co, sc->params.size_p);
+    }
+
+    // Second, go through the buffered coded packets of the generation
+    // Note that we need to subtract ucnum from buf->nc[gid]
+    for (i=0; i<buf->nc[gid]-ucnum; i++) {
         if (buf->params.bnc == 1) {
             co = rand() % 2;
             if (co == 1)
@@ -192,7 +209,8 @@ void snc_free_buffer(struct snc_buffer *buf)
 {
     if (buf == NULL)
         return;
-    for (int i=0; i<buf->gnum; i++) {
+    int i;
+    for (i=0; i<buf->gnum; i++) {
         if (buf->gbuf != NULL && buf->gbuf[i] != NULL) {
             /* Free bufferred packets, if any */
             for (int j=0; j<buf->size; j++)
@@ -209,21 +227,59 @@ void snc_free_buffer(struct snc_buffer *buf)
         free(buf->pn);
     if (buf->nsched != NULL)
         free(buf->nsched);
-    if (buf->prevuc != NULL)
-        free(buf->prevuc);
-    if (buf->lastuc != NULL)
-        free(buf->lastuc);
+    // Free systematic packets
+    if (buf->sysbuf != NULL) {
+        for (i=0; i<buf->snum; i++) {
+            // Free systematic packets
+            if (buf->sysbuf[i] != NULL)
+                snc_free_packet(buf->sysbuf[i]);
+        }
+        free(buf->sysbuf);
+    }
     free(buf);
     buf = NULL;
+
+    // free static variables if used
+    free_subgen_nbr_list(sc, gene_nbr);
+    snc_free_enc_context(sc);
     return;
 }
 
+/*
+ *
+ * Return:
+ *  -1            - scheduling failed
+ *  [0, gnum-1]   - scheduled generation
+ *  gnum          - forward systematic packet
+ */
 static int schedule_recode_generation(struct snc_buffer *buf, int sched_t)
 {
-    if (buf->nemp == 0)
+
+    if ((sched_t == RAND_SCHED_SYS || sched_t == MLPI_SCHED_SYS) && (buf->params.sys != 1)) {
+        fprintf(stderr, "Systematic scheduling can only be used with systematic coding schemes.\n");
+        return -1;
+    }
+
+    if (buf->nemp == 0 && buf->sysnum == 0)
         return -1;
 
     int gid;
+
+    if (sched_t == RAND_SCHED_SYS || sched_t == MLPI_SCHED_SYS) {
+        if (buf->sysptr < buf->sysnum) {
+            buf->sys_sched = buf->sysptr;
+            buf->sysptr += 1;
+            // update nsched of subgens containing the packet
+            ID *item = gene_nbr[buf->sysbuf[buf->sys_sched]->ucid]->first;
+            while (item != NULL) {
+                gid = item->data;
+                buf->nsched[gid] += 1;
+                item = item->next;
+            }
+            return buf->gnum;
+        }
+    }
+
     if (sched_t == TRIV_SCHED) {
         gid = rand() % buf->gnum;
         buf->nsched[gid]++;
@@ -294,4 +350,3 @@ static int banded_nonuniform_sched(struct snc_buffer *buf)
 	}
 	return selected;
 }
-

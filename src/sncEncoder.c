@@ -214,6 +214,7 @@ static int create_context_from_params(struct snc_context *sc)
         fprintf(stderr, "%s: calloc sc->nccount\n", fname);
         return (-1);
     }
+    sc->count = 0;
 
     int coverage;
     if (sc->params.type == RAND_SNC) {
@@ -584,6 +585,17 @@ static void encode_packet(struct snc_context *sc, int gid, struct snc_packet *pk
 {
     pkt->gid = gid;
     int pktid;
+    if (sc->params.sys == 1 && sc->count < sc->snum) {
+        // send an uncoded source packet
+        pktid = sc->count;
+        memcpy(pkt->syms, sc->pp[pktid], sc->params.size_p*sizeof(GF_ELEMENT));
+        pkt->gid = -1;    // gid=-1 && ucid != -1 indicates it's a systematic packet
+        pkt->ucid = pktid;
+        sc->nccount[gid] += 1;
+        sc->count += 1;
+        return;
+    }
+    /*
     if (sc->params.sys == 1 && sc->nccount[gid] < sc->params.size_b) {
         // Send an uncoded packet
         if (sc->params.bnc == 1) {
@@ -597,6 +609,7 @@ static void encode_packet(struct snc_context *sc, int gid, struct snc_packet *pk
         sc->nccount[gid] += 1;
         return;
     }
+    */
     int i;
     GF_ELEMENT co;
     for (i=0; i<sc->params.size_g; i++) {
@@ -613,6 +626,7 @@ static void encode_packet(struct snc_context *sc, int gid, struct snc_packet *pk
     }
     pkt->ucid = -1;
     sc->nccount[gid] += 1;
+    sc->count += 1;
     return;
 }
 
@@ -676,14 +690,25 @@ void print_code_summary(struct snc_context *sc, double overhead, double operatio
         default:
             strcpy(typestr, "UNKNOWN");
     }
+    // precode type
+    char *hdpc = getenv("SNC_PRECODE");
+    int HDPC = 0;
+    if (hdpc != NULL && strcmp(hdpc, "HDPC") == 0)
+        HDPC = 1;
     char typestr2[20];
     if (sc->params.size_c == 0) {
         strcpy(typestr2, "NoPrecode");
     } else {
         if (sc->params.bpc) {
-            strcpy(typestr2, "BinaryPrecode");
+            if (HDPC)
+                strcpy(typestr2, "BinaryHDPC");
+            else
+                strcpy(typestr2, "BinaryLDPC");
         } else {
-            strcpy(typestr2, "NonBinaryPrecode");
+            if (HDPC)
+                strcpy(typestr2, "NonBinaryHDPC");
+            else
+                strcpy(typestr2, "NonBinaryLDPC");
         }
     }
     char typestr3[20];

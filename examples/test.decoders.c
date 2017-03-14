@@ -117,11 +117,11 @@ int main(int argc, char *argv[])
         snc_process_packet(decoder, pkt);
         snc_free_packet(pkt);
         stop = clock();
-        dtime += stop - start;
+        dtime += (stop - start);
     }
     //printf("clocks: %d CLOCKS_PER_SEC: %d \n", dtime, CLOCKS_PER_SEC);
 
-    printf("dec-time: %.6f ", ((double) dtime)/CLOCKS_PER_SEC);
+    printf("dec-time: %.6f ", (double) dtime/CLOCKS_PER_SEC);
 
     struct snc_context *dsc = snc_get_enc_context(decoder);
     unsigned char *rec_buf = snc_recover_data(dsc);

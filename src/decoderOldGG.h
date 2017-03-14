@@ -1,18 +1,12 @@
-#ifndef NGG_DECODER_H
-#define NGG_DECODER_H
+#ifndef GG_DECODER_H
+#define GG_DECODER_H
 #include "sparsenc.h"
 
 #define FB_THOLD    1
 typedef struct node      ID;
 typedef struct node_list ID_list;
 
-// Store in-processing matrices of the decoder
-struct running_matrix {
-    int DoF_miss;
-    unsigned char *erased;   // bits indicating recovered packets
-    struct row_vector **row;
-    GF_ELEMENT **message;
-};
+struct running_matrix;
 
 struct decoding_context_GG {
     struct snc_context  *sc;            // The file information
