@@ -3,7 +3,14 @@
  *-------------------------------------------------------------*/
 #include "common.h"
 #include "galois.h"
-#include "decoderNewGG.h"
+#include "decoderGG.h"
+
+struct running_matrix {
+    int DoF_miss;
+    unsigned char *erased;   // bits indicating recovered packets
+    struct row_vector **row;
+    GF_ELEMENT **message;
+};
 
 static void decode_generation(struct decoding_context_GG *dec_ctx, int gid);
 static void perform_iterative_decoding(struct decoding_context_GG *dec_ctx);
@@ -16,6 +23,10 @@ static int check_for_new_decodables(struct decoding_context_GG *dec_ctx);
 static void free_running_matrix(struct running_matrix *matrix, int rows);
 
 static ID_list **gene_nbr = NULL;    // lists of subgeneration neighbors of each packet
+
+// Performance analysis use ONLY
+static int g_decoded = 0; // decoded from subgen
+static int c_decoded = 0; // recovered from precode decoding
 
 // setup decoding context:
 struct decoding_context_GG *create_dec_context_GG(struct snc_parameters *sp)
@@ -201,6 +212,9 @@ void process_packet_GG(struct decoding_context_GG *dec_ctx, struct snc_packet *p
     static char fname[] = "process_packet_GG";
     dec_ctx->overhead += 1;
 
+    if (get_loglevel() == TRACE)
+        printf("Received: %d g_decoded: %d c_decoded: %d\n", dec_ctx->overhead-1, g_decoded, c_decoded);
+
     int i, j;
     int gensize = dec_ctx->sc->params.size_g;
     int pktsize = dec_ctx->sc->params.size_p;
@@ -289,6 +303,7 @@ void process_packet_GG(struct decoding_context_GG *dec_ctx, struct snc_packet *p
             printf("GG splitted operations: %.2f %.2f\n",
                     (double) dec_ctx->ops1/dec_ctx->sc->snum/dec_ctx->sc->params.size_p,
                     (double) dec_ctx->ops2/dec_ctx->sc->snum/dec_ctx->sc->params.size_p);
+            printf("Received: %d g_decoded: %d c_decoded: %d\n", dec_ctx->overhead, g_decoded, c_decoded);
         }
         return;
     }
@@ -364,6 +379,8 @@ static void decode_generation(struct decoding_context_GG *dec_ctx, int gid)
     dec_ctx->grecent[dec_ctx->newgpos] = gid;
     dec_ctx->newgpos++;
     dec_ctx->grcount++;
+
+    g_decoded += c;
 }
 
 // This function performs iterative decoding on the precode and GNC code,
@@ -509,7 +526,8 @@ static int check_for_new_recoverables(struct decoding_context_GG *dec_ctx)
                 new_id->data = pktid;
                 new_id->next = NULL;
                 append_to_list(dec_ctx->recent, new_id);
-                
+
+                c_decoded += 1;
             }
             dec_ctx->check_degrees[i] = 0;
         }
@@ -529,6 +547,8 @@ static int check_for_new_recoverables(struct decoding_context_GG *dec_ctx)
             new_id->data = i+snum;
             new_id->next = NULL;
             append_to_list(dec_ctx->recent, new_id);
+
+            c_decoded += 1;
         }
 
     }

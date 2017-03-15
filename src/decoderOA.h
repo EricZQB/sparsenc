@@ -3,11 +3,7 @@
 #include "sparsenc.h"
 
 // To store matrices in processing (needed by the decoder)
-struct running_matrix
-{
-    struct row_vector **row;
-    GF_ELEMENT **message;
-};
+struct running_matrix;
 
 /*
  * OA (overlap aware) DECODING CONTEXT is used at each destination node

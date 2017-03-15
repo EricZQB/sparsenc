@@ -5,6 +5,11 @@
 #include "galois.h"
 #include "decoderOA.h"
 
+struct running_matrix
+{
+    struct row_vector **row;
+    GF_ELEMENT **message;
+};
 /*
  * Transform coefficient matrix of each generation to row echelon form (REF).
  * The REF has the property that if a diagonal element is nonzero, all elements
