@@ -365,8 +365,6 @@ void free_dec_context_BD(struct decoding_context_BD *dec_ctx)
 {
     if (dec_ctx == NULL)
         return;
-    if (dec_ctx->sc != NULL)
-        snc_free_enc_context(dec_ctx->sc);
     if (dec_ctx->coefficient != NULL) {
         for (int i=dec_ctx->sc->snum+dec_ctx->sc->cnum-1; i>=0; i--) {
             if (dec_ctx->coefficient[i] != NULL)
@@ -381,6 +379,8 @@ void free_dec_context_BD(struct decoding_context_BD *dec_ctx)
         }
         free(dec_ctx->message);
     }
+    if (dec_ctx->sc != NULL)
+        snc_free_enc_context(dec_ctx->sc);
     if (dec_ctx->ctoo_r != NULL)
         free(dec_ctx->ctoo_r);
     if (dec_ctx->ctoo_c != NULL)

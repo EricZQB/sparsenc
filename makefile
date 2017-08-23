@@ -1,7 +1,5 @@
 ######################################################
 # Makefile for sparsenc
-# Ye Li
-# leeyee.seu@gmail.com
 ######################################################
 
 TOP = .
@@ -14,7 +12,7 @@ UNAME := $(shell uname)
 CC := gcc
 ifeq ($(UNAME), Darwin)
 	SED = gsed
-	CC  = gcc-6
+	CC  = gcc-7
 	#CC  = clang
 	HAS_SSSE3 := $(shell sysctl -a | grep supplementalsse3)
 	HAS_AVX2  := $(shell sysctl -a | grep avx2)
@@ -22,11 +20,23 @@ endif
 ifeq ($(UNAME), Linux)
 	SED = sed
 	CC  = gcc
+	HAS_NEON32  := $(shell grep -i neon /proc/cpuinfo)
+	HAS_NEON64  := $(shell uname -a | grep -i aarch64)
 	HAS_SSSE3 := $(shell grep -i ssse3 /proc/cpuinfo)
 	HAS_AVX2  := $(shell grep -i avx2 /proc/cpuinfo)
 endif
 
+GNCENC  := $(OBJDIR)/common.o $(OBJDIR)/bipartite.o $(OBJDIR)/sncEncoder.o $(OBJDIR)/galois.o $(OBJDIR)/gaussian.o $(OBJDIR)/mt19937ar.o
+
 CFLAGS0 = -Winline -std=c99 -lm -O3 -DNDEBUG $(INC_PARMS)
+ifneq ($(HAS_NEON32),)
+	CFLAGS1 = -DARM_NEON32 -mfloat-abi=hard -mfpu=neon -O3 -std=c99
+	GNCENC  := $(OBJDIR)/common.o $(OBJDIR)/bipartite.o $(OBJDIR)/sncEncoder.o $(OBJDIR)/galois_neon.o $(OBJDIR)/gaussian.o $(OBJDIR)/mt19937ar.o
+endif
+ifneq ($(HAS_NEON64),)
+	CFLAGS1 = -DARM_NEON64 -mfloat-abi-hard -mfpu=neon -O3 -std=c99
+	GNCENC  := $(OBJDIR)/common.o $(OBJDIR)/bipartite.o $(OBJDIR)/sncEncoder.o $(OBJDIR)/galois_neon.o $(OBJDIR)/gaussian.o $(OBJDIR)/mt19937ar.o
+endif
 ifneq ($(HAS_SSSE3),)
 	CFLAGS1 = -mssse3 -DINTEL_SSSE3
 endif
@@ -40,7 +50,6 @@ vpath %.h src include
 vpath %.c src examples
 
 DEFS    := sparsenc.h common.h galois.h decoderGG.h decoderOA.h decoderBD.h decoderCBD.h decoderPP.h
-GNCENC  := $(OBJDIR)/common.o $(OBJDIR)/bipartite.o $(OBJDIR)/sncEncoder.o $(OBJDIR)/galois.o $(OBJDIR)/gaussian.o $(OBJDIR)/mt19937ar.o
 RECODER := $(OBJDIR)/sncRecoder.o 
 DECODER := $(OBJDIR)/sncDecoder.o
 GGDEC   := $(OBJDIR)/decoderGG.o 
@@ -55,6 +64,9 @@ all: sncDecoder sncDecoderFile sncRecoder2Hop sncRestore
 libsparsenc.so: $(GNCENC) $(GGDEC) $(OADEC) $(BDDEC) $(CBDDEC) $(PPDEC) $(RECODER) $(DECODER)
 	$(CC) -shared -o libsparsenc.so $^
 	
+sncRLNC: $(GNCENC) $(GGDEC) $(OADEC) $(BDDEC) $(CBDDEC) $(PPDEC) $(RECODER) $(DECODER) test.RLNC.c
+	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^
+
 #Test snc decoder
 sncDecoders: libsparsenc.so test.decoders.c
 	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
@@ -66,6 +78,9 @@ sncRestore: libsparsenc.so test.restore.c
 	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
 #Test decoder for files
 sncDecodersFile: libsparsenc.so test.file.decoders.c
+	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
+#Test recoder
+sncRecoder2Hop: libsparsenc.so test.2hopRecoder.c
 	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
 #Test recoder
 sncRecoder-n-Hop: libsparsenc.so test.nhopRecoder.c
@@ -82,7 +97,7 @@ $(OBJDIR)/%.o: $(OBJDIR)/%.c $(DEFS)
 
 .PHONY: clean
 clean:
-	rm -f *.o $(OBJDIR)/*.o libsparsenc.so sncDecoders sncDecoderST sncDecodersFile sncRecoder2Hop sncRecoder-n-Hop sncRecoderFly sncRestore
+	rm -f *.o $(OBJDIR)/*.o libsparsenc.so sncDecoders sncDecoderST sncDecodersFile sncRecoder2Hop sncRecoder-n-Hop sncRecoderFly sncRestore sncRLNC
 
 install: libsparsenc.so
 	cp include/sparsenc.h /usr/include/

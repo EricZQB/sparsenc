@@ -173,11 +173,11 @@ int snc_load_file_to_context(const char *filepath, long start, struct snc_contex
 static int verify_code_parameter(struct snc_parameters *sp)
 {
     if (sp->size_b > sp->size_g) {
-        fprintf(stderr, "code spmeter error: size_b > size_g\n");
+        fprintf(stderr, "code parameter error: size_b > size_g\n");
         return(-1);
     }
-    if (sp->size_g*sp->size_p > sp->datasize) {
-        fprintf(stderr, "code spmeter error: size_b X size_p > datasize\n");
+    if (sp->size_g*sp->size_p < sp->datasize) {
+        fprintf(stderr, "code parameter error: size_g X size_p < datasize\n");
         return(-1);
     }
     return(0);

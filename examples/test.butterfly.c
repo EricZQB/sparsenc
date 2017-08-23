@@ -161,7 +161,11 @@ int main(int argc, char *argv[])
     sp.seed = (snc_get_parameters(sc))->seed;
     struct snc_decoder *decoder = snc_create_decoder(&sp, decoder_t);
     clock_t start, stop, dtime = 0;
+    clock_t recv_start;
+    int nuse = 0;
+    int first_recv = 1;
     while (!snc_decoder_finished(decoder)) {
+        nuse++;
         // S-->A
         struct snc_packet *pktSA = snc_generate_packet(sc);
         if (rand() % 100 >= Esa * 100)
@@ -201,6 +205,10 @@ int main(int argc, char *argv[])
         if (snc_recode_packet_im(buf_A, pktAR, sched_t) != -1 && rand()%100 >= Ear*100) {
             /* Measure decoding time */
             start = clock();
+            if (first_recv) {
+                recv_start = clock();
+                first_recv = 0;
+            }
             snc_process_packet(decoder, pktAR);
             stop = clock();
             dtime += stop - start;
@@ -218,7 +226,8 @@ int main(int argc, char *argv[])
         }
         snc_free_packet(pktDR);
     }
-    printf("dec-time: %.2f bufsize: %d Esa: %.3f Esb: %.3f Eac: %.3f Ebc: %.3f Ear: %.3f Ecd: %.3f Edr: %.3f \n", ((double) dtime)/CLOCKS_PER_SEC, bufsize, Esa, Esb, Eac, Ebc, Ear, Ecd, Edr);
+    clock_t decode_delay = clock() - recv_start;
+    printf("dec-time: %.6f dec-delay: %.6f bufsize: %d Esa: %.3f Esb: %.3f Eac: %.3f Ebc: %.3f Ear: %.3f Ecd: %.3f Edr: %.3f nuses: %d\n", ((double) dtime)/CLOCKS_PER_SEC, ((double) decode_delay)/CLOCKS_PER_SEC, bufsize, Esa, Esb, Eac, Ebc, Ear, Ecd, Edr, nuse);
 
     struct snc_context *dsc = snc_get_enc_context(decoder);
     unsigned char *rec_buf = snc_recover_data(dsc);

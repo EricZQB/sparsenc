@@ -308,8 +308,6 @@ void free_dec_context_PP(struct decoding_context_PP *dec_ctx)
 {
     if (dec_ctx == NULL)
         return;
-    if (dec_ctx->sc != NULL)
-        snc_free_enc_context(dec_ctx->sc);
     if (dec_ctx->row != NULL) {
         for (int i=dec_ctx->sc->snum+dec_ctx->sc->cnum-1; i>=0; i--) {
             if (dec_ctx->row[i] != NULL) {
@@ -327,6 +325,8 @@ void free_dec_context_PP(struct decoding_context_PP *dec_ctx)
         }
         free(dec_ctx->message);
     }
+    if (dec_ctx->sc != NULL)
+        snc_free_enc_context(dec_ctx->sc);
     free(dec_ctx);
     dec_ctx = NULL;
     return;

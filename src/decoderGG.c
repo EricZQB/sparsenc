@@ -143,11 +143,6 @@ void free_dec_context_GG(struct decoding_context_GG *dec_ctx)
 {
     if (dec_ctx == NULL)
         return;
-    if (dec_ctx->sc != NULL) {
-        free_subgen_nbr_list(dec_ctx->sc, gene_nbr);
-        snc_free_enc_context(dec_ctx->sc);
-    }
-
     int i, j, k;
     if (dec_ctx->evolving_checks != NULL) {
         for (i=0; i<dec_ctx->sc->cnum; i++) {
@@ -168,6 +163,11 @@ void free_dec_context_GG(struct decoding_context_GG *dec_ctx)
         }
         free(dec_ctx->Matrices);
     }
+    if (dec_ctx->sc != NULL) {
+        free_subgen_nbr_list(dec_ctx->sc, gene_nbr);
+        snc_free_enc_context(dec_ctx->sc);
+    }
+
     if (dec_ctx->recent != NULL)
         free_list(dec_ctx->recent);
     free(dec_ctx);

@@ -7,8 +7,9 @@
 
 struct running_matrix
 {
+    int               dof;   // received local dof of the matrix
     struct row_vector **row;
-    GF_ELEMENT **message;
+    GF_ELEMENT        **message;
 };
 /*
  * Transform coefficient matrix of each generation to row echelon form (REF).
@@ -96,6 +97,7 @@ struct decoding_context_OA *create_dec_context_OA(struct snc_parameters *sp, int
             fprintf(stderr, "%s: malloc dec_ctx->Matrices[%d]\n", fname, i);
             goto AllocError;
         }
+        dec_ctx->Matrices[i]->dof = 0;
         // Allocate coefficient and message matrices in running_matrix
         // coefficeint: size_g x size_g
         // message:     size_g x size_p
@@ -174,6 +176,11 @@ void process_packet_OA(struct decoding_context_OA *dec_ctx, struct snc_packet *p
         }
         // Translate the encoding vector to the sorted form as in the generation
         struct running_matrix *matrix = dec_ctx->Matrices[gid];
+        if (matrix->dof == dec_ctx->sc->params.size_g) {
+            // LDM is already solvable, the new packet is useless. Don't waste time
+            free(pkt_coes);
+            return;
+        }
         for (i=0; i<gensize; i++) {
             if (pkt_coes[i] != 0) {
                 if (matrix->row[i] != NULL) {
@@ -197,11 +204,12 @@ void process_packet_OA(struct decoding_context_OA *dec_ctx, struct snc_packet *p
             memcpy(matrix->row[pivot]->elem, &(pkt_coes[pivot]), sizeof(GF_ELEMENT)*matrix->row[pivot]->len);
             matrix->message[pivot] = malloc(sizeof(GF_ELEMENT) * pktsize);
             memcpy(matrix->message[pivot], pkt->syms, pktsize*sizeof(GF_ELEMENT));
+            matrix->dof += 1;
             dec_ctx->local_DoF += 1;
         }
         free(pkt_coes);
 
-        if (dec_ctx->local_DoF >= (dec_ctx->sc->snum+dec_ctx->aoh)) {
+        if (dec_ctx->local_DoF >= (dec_ctx->sc->snum+dec_ctx->aoh) || dec_ctx->local_DoF == gensize*dec_ctx->sc->gnum) {
             dec_ctx->OA_ready = 1;
             // When OA ready, convert LDMs to upper triangular form
             long ops = running_matrix_to_REF(dec_ctx);
@@ -305,8 +313,6 @@ void free_dec_context_OA(struct decoding_context_OA *dec_ctx)
 {
     if (dec_ctx == NULL)
         return;
-    if (dec_ctx->sc != NULL)
-        snc_free_enc_context(dec_ctx->sc);
     int i, j, k;
     if (dec_ctx->Matrices != NULL) {
         for (i=0; i<dec_ctx->sc->gnum; i++){
@@ -332,6 +338,10 @@ void free_dec_context_OA(struct decoding_context_OA *dec_ctx)
         }
         free(dec_ctx->JMBmessage);
     }
+    // dec_ctx->sc should only be freed after Matrices being freed
+    if (dec_ctx->sc != NULL)
+        snc_free_enc_context(dec_ctx->sc);
+
     if (dec_ctx->ctoo_r != NULL)
         free(dec_ctx->ctoo_r);
     if (dec_ctx->ctoo_c != NULL)

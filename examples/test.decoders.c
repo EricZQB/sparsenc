@@ -110,6 +110,8 @@ int main(int argc, char *argv[])
 
     decoder = snc_restore_decoder("CBDdecoder.part");
     */
+    clock_t send_start = clock();
+    clock_t decode_delay = 0;
     while (snc_decoder_finished(decoder) != 1) {
         struct snc_packet *pkt = snc_generate_packet(sc);
         /* Measure decoding time */
@@ -119,9 +121,10 @@ int main(int argc, char *argv[])
         stop = clock();
         dtime += (stop - start);
     }
+    decode_delay = clock() - send_start;
     //printf("clocks: %d CLOCKS_PER_SEC: %d \n", dtime, CLOCKS_PER_SEC);
 
-    printf("dec-time: %.6f ", (double) dtime/CLOCKS_PER_SEC);
+    printf("dec-time: %.6f decode-delay: %.6f ", (double) dtime/CLOCKS_PER_SEC, (double) decode_delay/CLOCKS_PER_SEC);
 
     struct snc_context *dsc = snc_get_enc_context(decoder);
     unsigned char *rec_buf = snc_recover_data(dsc);
