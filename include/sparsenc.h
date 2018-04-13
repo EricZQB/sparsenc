@@ -9,10 +9,13 @@ typedef unsigned char GF_ELEMENT;
  * RAND     - Packets are pesudo-randomly grouped
  * BAND     - Packets are grouped to be consecutively overlapped
  * WINDWRAP - Similar as BAND, but has wrap around in encoding vectors
+ * BATS     - Fixed-degree Batch Sparse Code
  */
 #define RAND_SNC        0
 #define BAND_SNC        1
 #define WINDWRAP_SNC    2
+#define BATS_SNC        3
+#define RAPTOR_SNC      99
 
 /*
  * Type of SNC decoders
@@ -43,7 +46,7 @@ typedef unsigned char GF_ELEMENT;
 struct snc_context;     // Sparse network code encode context
 
 struct snc_packet {
-    int         gid;    // subgeneration id;
+    int         gid;    // subgeneration/batch id;
     int         ucid;   // it's an uncoded packet of THE GENERATION 
                         // (note: not the packet index; -1 if it's coded)
     GF_ELEMENT  *coes;  // SIZE_G coding coefficients of coded packet
@@ -55,8 +58,8 @@ struct snc_parameters {
     long    datasize;   // Data size in bytes.
     int     size_p;     // packet size (in bytes)
     int     size_c;     // number of parity-check
-    int     size_b;
-    int     size_g;
+    int     size_b;     // base generation size of fixed-number subset codes or the BTS for BATS-like codes
+    int     size_g;     // generation size
     int     type;       // Code type
     int     bpc;        // binary precode
     int     bnc;        // binary network coding
@@ -67,6 +70,8 @@ struct snc_parameters {
 struct snc_decoder;     // Sparse network code decoder
 
 struct snc_buffer;      // Buffer for storing snc packets
+
+struct snc_buffer_bats;
 
 /*------------------------------- sncEncoder -------------------------------*/
 /**
@@ -102,6 +107,9 @@ struct snc_packet *snc_alloc_empty_packet(struct snc_parameters *sp);
 
 // Generate an snc packet from the encode context
 struct snc_packet *snc_generate_packet(struct snc_context *sc);
+
+// Duplicate an snc packet
+struct snc_packet *snc_duplicate_packet(struct snc_packet *pkt, struct snc_parameters *params);
 
 // Generate an snc packet to the memory of an existing snc_packet struct
 int snc_generate_packet_im(struct snc_context *sc, struct snc_packet *pkt);
@@ -175,4 +183,15 @@ int snc_recode_packet_im(struct snc_buffer *buffer, struct snc_packet *pkt, int 
 // Free snc buffer
 void snc_free_buffer(struct snc_buffer *buffer);
 
+/*---------------------------- sncRecoderBATS ----------------------------*/
+
+struct snc_buffer_bats *snc_create_buffer_bats(struct snc_parameters *sp, int bufsize);
+
+void snc_buffer_packet_bats(struct snc_buffer_bats *buf, struct snc_packet *pkt);
+
+struct snc_packet *snc_recode_packet_bats(struct snc_buffer_bats *buf);
+
+int snc_recode_packet_bats_im(struct snc_buffer_bats *buf, struct snc_packet *pkt);
+
+void snc_free_buffer_bats(struct snc_buffer_bats *buf);
 #endif /* SNC_H */

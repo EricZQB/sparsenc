@@ -61,11 +61,13 @@ struct snc_buffer *snc_create_buffer(struct snc_parameters *sp, int bufsize)
     }
     if (sp->sys == 1) {
         // allocate buffer for uncoded packets
-        if ((buf->sysbuf = calloc(buf->snum, sizeof(struct snc_packet *))) == NULL){
+        if ((buf->sysbuf = calloc(buf->size, sizeof(struct snc_packet *))) == NULL){
             fprintf(stderr, "%s: calloc buf->sysbuf\n", fname);
             goto Error;
         }
+        buf->spn    = 0;
         buf->sysnum = 0;
+        buf->newsys = -1;
         buf->sysptr = 0;
         sc = snc_create_enc_context(NULL, sp);  //encoding context is needed for systematic forwarding/recoding
         gene_nbr = build_subgen_nbr_list(sc);
@@ -94,8 +96,25 @@ void snc_buffer_packet(struct snc_buffer *buf, struct snc_packet *pkt)
     int gid = pkt->gid;
     if (gid == -1 && pkt->ucid != -1) {
         // This is a systematic packet
-        buf->sysbuf[buf->sysnum] = pkt;
-        buf->sysnum += 1;
+        if (buf->sysbuf[buf->spn] != NULL) {
+            // clean up old stored packet
+            // First re-calculate the packets belonging to each subgen
+            // Count the packet as a received packet for each subgen containing it
+            ID *item = gene_nbr[buf->sysbuf[buf->spn]->ucid]->first;
+            while (item != NULL) {
+                gid = item->data;
+                buf->nc[gid]--;
+                item = item->next;
+            }
+
+            snc_free_packet(buf->sysbuf[buf->spn]);
+            buf->sysbuf[buf->spn] = NULL;
+        }
+        buf->sysbuf[buf->spn] = pkt;
+        buf->sysnum = buf->sysnum == buf->size ? buf->sysnum : buf->sysnum + 1;
+        buf->newsys = buf->spn;
+        // Update index of position to store the next packet
+        buf->spn = (buf->spn + 1) % buf->size;
         // Count the packet as a received packet for each subgen containing it
         ID *item = gene_nbr[pkt->ucid]->first;
         while (item != NULL) {
@@ -107,14 +126,28 @@ void snc_buffer_packet(struct snc_buffer *buf, struct snc_packet *pkt)
         }
         return;
     }
+
+    // Normal coded packets
     if (buf->nc[gid] == 0) {
         // Buffer of the generation is empty
         buf->gbuf[gid][0] = pkt;
         buf->nc[gid]++;
         buf->nemp++;
-    } else if (buf->nc[gid] == buf->size) {
-        // Buffer of the generation is full, remove in a FIFO manner
-        snc_free_packet(buf->gbuf[gid][buf->pn[gid]]);  //discard packet previously stored in the position
+    } else if (buf->nc[gid] + buf->sysnum >= buf->size) {
+        // Clean up a systematic packet from buffer to store the new packet
+        if (buf->sysnum > 0) {
+            for (int i=buf->size-1; i>=0; i--) {
+                if (buf->sysbuf[i] != NULL) {
+                    snc_free_packet(buf->sysbuf[i]);
+                    buf->sysbuf[i] = NULL;
+                    buf->sysnum -= 1;
+                    break;
+                }
+            }
+        } else {
+            // Buffer of the generation is full, remove in a FIFO manner
+            snc_free_packet(buf->gbuf[gid][buf->pn[gid]]);  //discard packet previously stored in the position
+        }
         buf->gbuf[gid][buf->pn[gid]] = pkt;
     } else {
         // Buffer is neither empty nor full
@@ -134,9 +167,10 @@ struct snc_packet *snc_recode_packet(struct snc_buffer *buf, int sched_t)
 
     if (snc_recode_packet_im(buf, pkt, sched_t) == 0)
         return pkt;
-    else
+    else {
+        snc_free_packet(pkt);
         return NULL;
-    return pkt;
+    }
 }
 
 int snc_recode_packet_im(struct snc_buffer *buf, struct snc_packet *pkt, int sched_t)
@@ -149,9 +183,11 @@ int snc_recode_packet_im(struct snc_buffer *buf, struct snc_packet *pkt, int sch
     if (gid == buf->gnum) {
         // A systematic packet is scheduled
         pkt->gid = -1;
-        pkt->ucid = buf->sysbuf[buf->sys_sched]->ucid;
+        //pkt->ucid = buf->sysbuf[buf->sys_sched]->ucid;
+        pkt->ucid = buf->sysbuf[buf->newsys]->ucid;
         memset(pkt->syms, 0, sizeof(GF_ELEMENT)*buf->params.size_p);
-        memcpy(pkt->syms, buf->sysbuf[buf->sys_sched]->syms, sizeof(GF_ELEMENT)*buf->params.size_p);
+        memcpy(pkt->syms, buf->sysbuf[buf->newsys]->syms, sizeof(GF_ELEMENT)*buf->params.size_p);
+        buf->newsys = -1;  // reset newsys indicator
         return 0;
     }
 
@@ -229,7 +265,7 @@ void snc_free_buffer(struct snc_buffer *buf)
         free(buf->nsched);
     // Free systematic packets
     if (buf->sysbuf != NULL) {
-        for (i=0; i<buf->snum; i++) {
+        for (i=0; i<buf->size; i++) {
             // Free systematic packets
             if (buf->sysbuf[i] != NULL)
                 snc_free_packet(buf->sysbuf[i]);
@@ -266,6 +302,7 @@ static int schedule_recode_generation(struct snc_buffer *buf, int sched_t)
     int gid;
 
     if (sched_t == RAND_SCHED_SYS || sched_t == MLPI_SCHED_SYS) {
+        /*
         if (buf->sysptr < buf->sysnum) {
             buf->sys_sched = buf->sysptr;
             buf->sysptr += 1;
@@ -278,6 +315,9 @@ static int schedule_recode_generation(struct snc_buffer *buf, int sched_t)
             }
             return buf->gnum;
         }
+        */
+        if (buf->newsys != -1) 
+            return buf->gnum;
     }
 
     if (sched_t == TRIV_SCHED) {

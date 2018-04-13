@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "common.h"
 static int loglevel = 0;    // log level for the library
+static int compare_int(const void *elem1, const void *elem2);
 void set_loglevel(const char *level)
 {
     if (strcmp(level, "TRACE") == 0)
@@ -167,6 +168,42 @@ void free_subgen_nbr_list(struct snc_context *sc, ID_list **gene_nbr)
     return;
 }
 
+// generate a number of n<ub unique random numbers within the range of [0, ub-1]
+// using Fisher-Yates shuffle method
+void get_random_unique_numbers(int ids[], int n, int ub)
+{
+	int init_array[ub];
+	int i, j;
+	for (i=0; i<ub; i++)
+		init_array[i] = i;
+
+	// randomly shuffle the init_array
+	for (i=ub-1; i>=1; i--) {
+		int rd = genrand_int32() % (i+1);
+		//int rd = gsl_rng_uniform_int(r, i+1);
+		int tmp = init_array[rd];
+		init_array[rd] = init_array[i];
+		init_array[i] = tmp;
+	}
+
+    // sort the obtained unique random numbers so that coding coefficients corresponding
+    // to packets are stored in the ascending order (to simplify decoder implementation)
+    qsort(init_array, n, sizeof(int), compare_int);
+    memcpy(ids, init_array, n*sizeof(int));
+	//for (j=0; j<n; j++)
+	//	ids[j] = init_array[j];
+}
+
+static int compare_int(const void *elem1, const void *elem2)
+{
+    int a = * ((int *) elem1);
+    int b = * ((int *) elem2);
+    if (a < b)
+        return -1;
+    if (a > b)
+        return 1;
+    return 0;
+}
 /*
  * Swap two continuous memory blocks
  */

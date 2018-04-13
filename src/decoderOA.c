@@ -5,6 +5,10 @@
 #include "galois.h"
 #include "decoderOA.h"
 
+extern int BALLOC;     // Number of batch/matrix pointers allocated in one shot
+static int maxseen = -1;     // The maximum seen batch ID 
+static int nrealloc = 0;      // Number of realloc() called for reallocating batch/matrix pointers
+
 struct running_matrix
 {
     int               dof;   // received local dof of the matrix
@@ -85,13 +89,15 @@ struct decoding_context_OA *create_dec_context_OA(struct snc_parameters *sp, int
     int pktsize = dec_ctx->sc->params.size_p;
     int numpp   = dec_ctx->sc->snum + dec_ctx->sc->cnum;
 
+    int nummat = dec_ctx->sc->gnum > 0 ? dec_ctx->sc->gnum : BALLOC;  // How many running matrices need to be allocated now?
+
     // Allocate matrices for per-generation decoding
-    dec_ctx->Matrices = calloc(dec_ctx->sc->gnum, sizeof(struct running_matrix*));
+    dec_ctx->Matrices = calloc(nummat, sizeof(struct running_matrix*));
     if (dec_ctx->Matrices == NULL) {
         fprintf(stderr, "%s: calloc dec_ctx->Matrices\n", fname);
         goto AllocError;
     }
-    for (i=0; i<dec_ctx->sc->gnum; i++) {
+    for (i=0; i<nummat; i++) {
         dec_ctx->Matrices[i] = calloc(1, sizeof(struct running_matrix));
         if (dec_ctx->Matrices[i] == NULL) {
             fprintf(stderr, "%s: malloc dec_ctx->Matrices[%d]\n", fname, i);
@@ -150,6 +156,39 @@ void process_packet_OA(struct decoding_context_OA *dec_ctx, struct snc_packet *p
     int gid = pkt->gid;
     int pivotfound = 0;
     int pivot;
+
+    // Reconstruct the batch information (packet id's of the batch content)
+    if (gid > maxseen) {
+        maxseen = gid;
+        if (maxseen >= BALLOC*(1+nrealloc)) {
+            // realloc batch pointers
+            int lb = BALLOC * (1 + nrealloc);
+            int ub = (maxseen / BALLOC + 1) * BALLOC;
+
+            dec_ctx->sc->gene = realloc(dec_ctx->sc->gene, sizeof(struct subgeneration*) * ub);
+            for (i=lb; i<ub; i++) {
+                dec_ctx->sc->gene[i] = malloc(sizeof(struct subgeneration));
+                dec_ctx->sc->gene[i]->gid = i;
+                dec_ctx->sc->gene[i]->pktid = malloc(sizeof(int)*dec_ctx->sc->params.size_g);       // Use malloc because pktid needs to be initialized as -1's later
+                memset(dec_ctx->sc->gene[i]->pktid, -1, sizeof(int)*dec_ctx->sc->params.size_g);
+                get_random_unique_numbers(dec_ctx->sc->gene[i]->pktid, dec_ctx->sc->params.size_g, dec_ctx->sc->snum+dec_ctx->sc->cnum);   // obtain packet IDs of the new batch
+            }
+
+            dec_ctx->Matrices = realloc(dec_ctx->Matrices, sizeof(struct running_matrix*) * ub);
+            for (i=lb; i<ub; i++) {
+                dec_ctx->Matrices[i] = calloc(1, sizeof(struct running_matrix));
+                dec_ctx->Matrices[i]->dof = 0;
+                // Allocate coefficient and message matrices in running_matrix
+                // coefficeint: size_g x size_g
+                // message:     size_g x size_p
+                // Dim-1) Pointers to each row
+                dec_ctx->Matrices[i]->row = calloc(gensize, sizeof(struct row_vector *));
+                dec_ctx->Matrices[i]->message = calloc(gensize, sizeof(GF_ELEMENT*));
+            }
+            nrealloc += (ub - lb) / BALLOC;
+        }
+
+    }
 
     /*
      * If decoder is not OA ready, process the packet within the generation.
@@ -485,7 +524,8 @@ static long running_matrix_to_REF(struct decoding_context_OA *dec_ctx)
 
 
     #pragma omp parallel for private(i)
-    for (i=0; i<dec_ctx->sc->gnum; i++) {
+    int numgen = dec_ctx->sc->gnum == -1 ? maxseen : dec_ctx->sc->gnum;
+    for (i=0; i<numgen; i++) {
         struct running_matrix *matrix = dec_ctx->Matrices[i];
 
         // Partially diagonalize the LDM
@@ -561,9 +601,10 @@ static void construct_GDM(struct decoding_context_OA *dec_ctx)
     }
 
     // Step 1, translate LEVs to GEV and move them to GDM
+    int numgen = dec_ctx->sc->gnum == -1 ? maxseen : dec_ctx->sc->gnum;
     GF_ELEMENT *global_ces = calloc(numpp, sizeof(GF_ELEMENT));
     int p_copy = 0;                             // 拷贝到JMBcofficient的行指针
-    for (i=0; i<dec_ctx->sc->gnum; i++) {
+    for (i=0; i<numgen; i++) {
         matrix = dec_ctx->Matrices[i];
         for (j=0; j<gensize; j++) {
             if (matrix->row[j] == NULL)
@@ -582,7 +623,7 @@ static void construct_GDM(struct decoding_context_OA *dec_ctx)
     if (get_loglevel() == TRACE)
         printf("%d local DoFs are available, copied %d to GDM.\n", dec_ctx->local_DoF, p_copy);
     // Free up local matrices
-    for (i=0; i<dec_ctx->sc->gnum; i++) {
+    for (i=0; i<numgen; i++) {
         free_running_matrix(dec_ctx->Matrices[i], dec_ctx->sc->params.size_g);
         dec_ctx->Matrices[i] == NULL;
     }

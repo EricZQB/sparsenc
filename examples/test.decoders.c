@@ -31,6 +31,8 @@ int main(int argc, char *argv[])
         sp.type = BAND_SNC;
     else if (strcmp(argv[1], "WINDWRAP") == 0)
         sp.type = WINDWRAP_SNC;
+    else if (strcmp(argv[1], "BATS") == 0)
+        sp.type = BATS_SNC;
     else {
         printf("%s\n", usage);
         exit(1);

@@ -91,9 +91,36 @@ struct snc_buffer {
     int                   *nsched;      // Number of scheduled times of each subgeneration
     // Use if code in buffer is systematic
     struct snc_packet    **sysbuf;      // Buffered uncoded packet (needed for systematic code)
+    int                    spn;         // Position to store next systematic packet in sysbuf
     int                    sysnum;      // number of buffered systematic packet
+    int                    newsys;      // A new systematic code has been received, schedule it
+                                        // -1 if not received, >=0 indicates its position in the sysbuf
     int                    sysptr;      // pointer of already scheduled systematic packet
     int                    sys_sched;   // scheduled systematic packet index in sysbuf
+};
+
+
+// BATS buffer of fixed size
+// Received packets from upstream are buffered in a first-in-first-out manner. 
+// If the buffer is full, the oldest buffered packet would be discarded to store 
+// a new received packet. We assume that the batch size is much larger than the 
+// buffer size. Therefore, the buffered packets may belong to at most two different 
+// batches, which happens when the buffer starts to receive the first several packets 
+// belonging to a new batch. When there are two different batches in the buffer, 
+// recoded packets are still generated from the older batch until all of its packets 
+// are discarded to accommodate received packets of the new batch. The current batch 
+// from which recoded packets are generated is referred to as the \textit{sending} batch 
+// of the buffer, and the \textit{receiving} batch is the batch the latest received 
+// packet belongs to. Clearly, the sending and receiving batches are the same if there 
+// are only one batch in the buffer.
+struct snc_buffer_bats {
+    struct snc_parameters   params;             // pointer to the parameter of the BATS code 
+    struct snc_packet     **srbuf;
+    int                     bufsize;            // size of buffer
+    int                     sbatchid;           // current sending batch
+    int                     s_first;            // start pos index of sending buffer
+    int                     r_last;             // end pos index of receiving buffer
+                                                // if ((r_last+1) % bufsize == s_start), discard old pkt
 };
 
 /* Row vector of a matrix */
@@ -117,6 +144,7 @@ unsigned char get_bit_in_array(unsigned char *coes, int i);
 void set_bit_in_array(unsigned char *coes, int i);
 ID_list **build_subgen_nbr_list(struct snc_context *sc);
 void free_subgen_nbr_list(struct snc_context *sc, ID_list **gene_nbr);
+void get_random_unique_numbers(int ids[], int n, int ub);
 //int snc_rand(void);
 //void snc_srand(unsigned int seed);
 // mt19937ar.c

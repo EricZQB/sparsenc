@@ -10,6 +10,11 @@
 #include "galois.h"
 #include "sparsenc.h"
 
+
+extern int BALLOC; // number of batch pointers allocation in one shot
+static int currbid = -1;   // used by BATS-like codes, ID of the current sending batch
+static int batsent = 0;    // used by BATS-like codes, number of sent packets from the current batch
+
 static int create_context_from_params(struct snc_context *sc);
 static int verify_code_parameter(struct snc_parameters *sp);
 static void perform_precoding(struct snc_context *sc);
@@ -17,7 +22,7 @@ static int group_packets_rand(struct snc_context *sc);
 static int group_packets_pseudorand(struct snc_context *sc);
 static int group_packets_band(struct snc_context *sc);
 static int group_packets_windwrap(struct snc_context *sc);
-static void encode_packet(struct snc_context *sc, int gid, struct snc_packet *pkt);
+static void encode_packet(struct snc_context *sc, struct subgeneration *subgen, struct snc_packet *pkt);
 static int schedule_generation(struct snc_context *sc);
 static int banded_nonuniform_sched(struct snc_context *sc);
 /*
@@ -77,8 +82,12 @@ struct snc_context *snc_create_enc_context(unsigned char *buf, struct snc_parame
     sc->cnum  = num_chk;  // Number of check packets
     if (sc->params.type == BAND_SNC) {
         sc->gnum  = ALIGN((num_src+num_chk-sc->params.size_g), sc->params.size_b) + 1;
-    } else {
+    }
+    if (sc->params.type == RAND_SNC || sc->params.type == WINDWRAP_SNC) {
         sc->gnum  = ALIGN( (num_src+num_chk), sc->params.size_b);
+    }
+    if (sc->params.type == BATS_SNC || sc->params.type == RAPTOR_SNC) {
+        sc->gnum = -1;  // a potentially unlimited number of subgenerateions would be constructed, so set it to -1 here.
     }
     /*
      * Verify code parameter
@@ -89,7 +98,7 @@ struct snc_context *snc_create_enc_context(unsigned char *buf, struct snc_parame
         return NULL;
     }
     /*
-     * Create generations, bipartite graph
+     * Create the precoding bipartite graph and construct subsets if fixed-number subsets are to be used
      */
     if (create_context_from_params(sc) != 0) {
         fprintf(stderr, "%s: create_context_from_params\n", fname);
@@ -172,14 +181,16 @@ int snc_load_file_to_context(const char *filepath, long start, struct snc_contex
 
 static int verify_code_parameter(struct snc_parameters *sp)
 {
-    if (sp->size_b > sp->size_g) {
+    if (sp->type != BATS_SNC && sp->type != RAPTOR_SNC && sp->size_b > sp->size_g) {
         fprintf(stderr, "code parameter error: size_b > size_g\n");
         return(-1);
     }
+    /*
     if (sp->size_g*sp->size_p < sp->datasize) {
         fprintf(stderr, "code parameter error: size_g X size_p < datasize\n");
         return(-1);
     }
+    */
     return(0);
 }
 
@@ -189,42 +200,6 @@ static int verify_code_parameter(struct snc_parameters *sp)
 static int create_context_from_params(struct snc_context *sc)
 {
     static char fname[] = "snc_create_enc_context_params";
-    // Inintialize generation structures
-    sc->gene  = calloc(sc->gnum, sizeof(struct subgeneration*));
-    if ( sc->gene == NULL ) {
-        fprintf(stderr, "%s: malloc sc->gene\n", fname);
-        return(-1);
-    }
-    for (int j=0; j<sc->gnum; j++) {
-        sc->gene[j] = malloc(sizeof(struct subgeneration));
-        if ( sc->gene[j] == NULL ) {
-            fprintf(stderr, "%s: malloc sc->gene[%d]\n", fname, j);
-            return(-1);
-        }
-        sc->gene[j]->gid = -1;
-        sc->gene[j]->pktid = malloc(sizeof(int)*sc->params.size_g);       // Use malloc because pktid needs to be initialized as -1's later
-        if ( sc->gene[j]->pktid == NULL ) {
-            fprintf(stderr, "%s: malloc sc->gene[%d]->pktid\n", fname, j);
-            return(-1);
-        }
-        memset(sc->gene[j]->pktid, -1, sizeof(int)*sc->params.size_g);
-    }
-    sc->nccount = calloc(sc->gnum, sizeof(int));
-    if (sc->nccount == NULL) {
-        fprintf(stderr, "%s: calloc sc->nccount\n", fname);
-        return (-1);
-    }
-    sc->count = 0;
-
-    int coverage;
-    if (sc->params.type == RAND_SNC) {
-        coverage = group_packets_rand(sc);
-        //coverage = group_packets_pseudorand(sc);
-    } else if (sc->params.type == BAND_SNC) {
-        coverage = group_packets_band(sc);
-    } else if (sc->params.type == WINDWRAP_SNC) {
-        coverage = group_packets_windwrap(sc);
-    }
     // Creating bipartite graph of the precode
     if (sc->cnum != 0) {
         if ( (sc->graph = malloc(sizeof(BP_graph))) == NULL ) {
@@ -235,6 +210,65 @@ static int create_context_from_params(struct snc_context *sc)
         if (create_bipartite_graph(sc->graph, sc->snum, sc->cnum) < 0)
             return (-1);
     }
+    // Inintialize generation structures (applied to fixed-number subsets codes)
+    if (sc->gnum > 0) {
+        sc->gene  = calloc(sc->gnum, sizeof(struct subgeneration*));
+        if ( sc->gene == NULL ) {
+            fprintf(stderr, "%s: malloc sc->gene\n", fname);
+            return(-1);
+        }
+        for (int j=0; j<sc->gnum; j++) {
+            sc->gene[j] = malloc(sizeof(struct subgeneration));
+            if ( sc->gene[j] == NULL ) {
+                fprintf(stderr, "%s: malloc sc->gene[%d]\n", fname, j);
+                return(-1);
+            }
+            sc->gene[j]->gid = -1;
+            sc->gene[j]->pktid = malloc(sizeof(int)*sc->params.size_g);       // Use malloc because pktid needs to be initialized as -1's later
+            if ( sc->gene[j]->pktid == NULL ) {
+                fprintf(stderr, "%s: malloc sc->gene[%d]->pktid\n", fname, j);
+                return(-1);
+            }
+            memset(sc->gene[j]->pktid, -1, sizeof(int)*sc->params.size_g);
+        }
+        sc->nccount = calloc(sc->gnum, sizeof(int));
+        if (sc->nccount == NULL) {
+            fprintf(stderr, "%s: calloc sc->nccount\n", fname);
+            return (-1);
+        }
+
+        switch (sc->params.type) {
+            case RAND_SNC:
+                group_packets_rand(sc);
+                break;
+            case BAND_SNC:
+                group_packets_band(sc);
+                break;
+            case WINDWRAP_SNC:
+                group_packets_windwrap(sc);
+                break;
+            default:
+                fprintf(stderr, "%s: unknown code type\n", fname);
+                break;
+        }
+    } else {
+        // In the first time, only allocate BALLOC batches. If more is needed, realloc() will be called later
+        sc->gene  = calloc(BALLOC, sizeof(struct subgeneration*));
+        if ( sc->gene == NULL ) {
+            fprintf(stderr, "%s: malloc sc->gene\n", fname);
+            return(-1);
+        }
+        // Construct the batches
+        for (int i=0; i<BALLOC; i++) {
+            sc->gene[i] = malloc(sizeof(struct subgeneration));
+            sc->gene[i]->gid = i;
+            sc->gene[i]->pktid = malloc(sizeof(int)*sc->params.size_g);       // Use malloc because pktid needs to be initialized as -1's later
+            memset(sc->gene[i]->pktid, -1, sizeof(int)*sc->params.size_g);
+            get_random_unique_numbers(sc->gene[i]->pktid, sc->params.size_g, sc->snum+sc->cnum);   // obtain packet IDs of the new batch
+        }
+    }
+    sc->count = 0;
+
     return(0);
 }
 
@@ -400,7 +434,6 @@ static int group_packets_pseudorand(struct snc_context *sc)
     return coverage;
 }
 
-
 /*
  * Use local RNG to group packets
  */
@@ -545,9 +578,26 @@ AllocErr:
 struct snc_packet *snc_generate_packet(struct snc_context *sc)
 {
     struct snc_packet *pkt = snc_alloc_empty_packet(&sc->params);
-    int gid = schedule_generation(sc);
-    encode_packet(sc, gid, pkt);
-    return pkt;
+    int ret = snc_generate_packet_im(sc, pkt);
+    if (ret < 0) {
+        snc_free_packet(pkt);
+        return NULL;
+    } else {
+        return pkt;
+    }
+}
+
+
+struct snc_packet *snc_duplicate_packet(struct snc_packet *pkt, struct snc_parameters *param)
+{
+    struct snc_packet *dup_pkt = malloc(sizeof(struct snc_packet));
+    dup_pkt->gid = pkt->gid;
+    dup_pkt->ucid = pkt->ucid;
+    dup_pkt->coes = malloc(sizeof(GF_ELEMENT) * param->size_g);
+    memcpy(dup_pkt->coes, pkt->coes, sizeof(GF_ELEMENT)*param->size_g);
+    dup_pkt->syms = malloc(sizeof(GF_ELEMENT) * param->size_p);
+    memcpy(dup_pkt->syms, pkt->syms, sizeof(GF_ELEMENT)*param->size_p);
+    return dup_pkt;
 }
 
 /*
@@ -564,8 +614,39 @@ int snc_generate_packet_im(struct snc_context *sc, struct snc_packet *pkt)
         memset(pkt->coes, 0, sc->params.size_g*sizeof(GF_ELEMENT));
     }
     memset(pkt->syms, 0, sc->params.size_p*sizeof(GF_ELEMENT));
-    int gid = schedule_generation(sc);
-    encode_packet(sc, gid, pkt);
+    if (sc->params.type == RAND_SNC || sc->params.type == BAND_SNC || sc->params.type == WINDWRAP_SNC) {
+        int gid = schedule_generation(sc);
+        encode_packet(sc, sc->gene[gid], pkt);
+    } else {
+        // encode from a dynamically constructed subset
+        if (sc->params.type == RAPTOR_SNC) {
+            // Always construct a new subset and generate a coded packet from it
+        }
+        if (sc->params.type == BATS_SNC) {
+            if (batsent >= sc->params.size_b && (currbid+1) % BALLOC == 0 ) {
+                // Time to switch a batch, but the allocated batch pointers have been used out. realloc()
+                // We need to allocate more memory for batch pointers
+                int bid = currbid + 1;
+                printf("Need to allocate more batch pointers, calling realloc()...\n");
+                sc->gene = realloc(sc->gene, sizeof(struct subgeneration*)*(bid+BALLOC));
+                for (int i=bid; i<bid+BALLOC; i++) {
+                    sc->gene[i] = malloc(sizeof(struct subgeneration));
+                    sc->gene[i]->gid = i;
+                    sc->gene[i]->pktid = malloc(sizeof(int)*sc->params.size_g);       // Use malloc because pktid needs to be initialized as -1's later
+                    memset(sc->gene[i]->pktid, -1, sizeof(int)*sc->params.size_g);
+                    get_random_unique_numbers(sc->gene[i]->pktid, sc->params.size_g, sc->snum+sc->cnum);   // obtain packet IDs of the new batch
+                }
+            }
+            if (currbid == -1 || batsent >= sc->params.size_b) {
+                // Switch batch
+                currbid = currbid + 1;
+                batsent = 0;
+            }
+            // Generate a coded packet from the current batch
+            encode_packet(sc, sc->gene[currbid], pkt);
+            batsent += 1;
+        }
+    }
     return (0);
 }
 
@@ -581,8 +662,9 @@ void snc_free_packet(struct snc_packet *pkt)
 }
 
 
-static void encode_packet(struct snc_context *sc, int gid, struct snc_packet *pkt)
+static void encode_packet(struct snc_context *sc, struct subgeneration *subgen, struct snc_packet *pkt)
 {
+    int gid = subgen->gid;
     pkt->gid = gid;
     int pktid;
     if (sc->params.sys == 1 && sc->count < sc->snum) {
@@ -591,29 +673,16 @@ static void encode_packet(struct snc_context *sc, int gid, struct snc_packet *pk
         memcpy(pkt->syms, sc->pp[pktid], sc->params.size_p*sizeof(GF_ELEMENT));
         pkt->gid = -1;    // gid=-1 && ucid != -1 indicates it's a systematic packet
         pkt->ucid = pktid;
-        sc->nccount[gid] += 1;
+        // sc->nccount[gid] += 1;
         sc->count += 1;
         return;
     }
-    /*
-    if (sc->params.sys == 1 && sc->nccount[gid] < sc->params.size_b) {
-        // Send an uncoded packet
-        if (sc->params.bnc == 1) {
-            set_bit_in_array(pkt->coes, sc->nccount[gid]);
-        } else {
-            pkt->coes[sc->nccount[gid]] = 1;
-        }
-        pktid = sc->gene[gid]->pktid[sc->nccount[gid]];
-        memcpy(pkt->syms, sc->pp[pktid], sc->params.size_p*sizeof(GF_ELEMENT));
-        pkt->ucid = sc->nccount[gid];      // Mark the uncoded pkt, and store its index amongst the generation
-        sc->nccount[gid] += 1;
-        return;
-    }
-    */
+
+    // Send coded packet
     int i;
     GF_ELEMENT co;
     for (i=0; i<sc->params.size_g; i++) {
-        pktid = sc->gene[gid]->pktid[i];  // The i-th packet of the gid-th generation
+        pktid = subgen->pktid[i];  // The i-th packet of the gid-th generation
         if (sc->params.bnc) {
             co = (GF_ELEMENT) rand() % 2;                   // Binary network code
             if (co == 1)
@@ -625,11 +694,12 @@ static void encode_packet(struct snc_context *sc, int gid, struct snc_packet *pk
         galois_multiply_add_region(pkt->syms, sc->pp[pktid], co, sc->params.size_p);
     }
     pkt->ucid = -1;
-    sc->nccount[gid] += 1;
+    // sc->nccount[gid] += 1;
     sc->count += 1;
     return;
 }
 
+// Randomly schedule a subset to generate a coded packet
 static int schedule_generation(struct snc_context *sc)
 {
     if (sc->gnum == 1)
@@ -645,6 +715,7 @@ static int schedule_generation(struct snc_context *sc)
 /*
  * Non-uniform random scheduling for banded codes
  * NOTE: scheduling of the 0-th and the (M-G)-th generation are not uniform
+ *
  * 0-th and (M-G)-th: (G+1)/2M
  * 1-th to (M-G-1)-th: 1/M
  * [G+1, 2, 2, 2,..., 2, G+1]
@@ -687,6 +758,9 @@ void print_code_summary(struct snc_context *sc, double overhead, double operatio
         case WINDWRAP_SNC:
             strcpy(typestr, "WINDWRAP");
             break;
+        case BATS_SNC:
+            strcpy(typestr, "BATS");
+            break;
         default:
             strcpy(typestr, "UNKNOWN");
     }
@@ -727,10 +801,18 @@ void print_code_summary(struct snc_context *sc, double overhead, double operatio
     printf("size_p: %d ", sc->params.size_p);
     printf("snum: %d ", sc->snum);
     printf("size_c: %d ", sc->params.size_c);
-    printf("size_b: %d ", sc->params.size_b);
-    printf("size_g: %d ", sc->params.size_g);
+    if (sc->params.type == BATS_SNC) {
+        printf("BTS: %d ", sc->params.size_b);
+        printf("batch-degree: %d ", sc->params.size_g);
+    } else {
+        printf("size_b: %d ", sc->params.size_b);
+        printf("size_g: %d ", sc->params.size_g);
+    }
     printf("type: [%s::%s::%s::%s] ", typestr, typestr2, typestr3, typestr4);
-    printf("gnum: %d ", sc->gnum);
+    if (sc->params.type == BATS_SNC)
+        printf("gnum: %d ", currbid+1);
+    else
+        printf("gnum: %d ", sc->gnum);
     if (operations != 0) {
         printf("overhead: %.6f ", overhead);
         printf("computation: %.4f\n", operations);

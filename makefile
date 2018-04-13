@@ -28,7 +28,7 @@ endif
 
 GNCENC  := $(OBJDIR)/common.o $(OBJDIR)/bipartite.o $(OBJDIR)/sncEncoder.o $(OBJDIR)/galois.o $(OBJDIR)/gaussian.o $(OBJDIR)/mt19937ar.o
 
-CFLAGS0 = -Winline -std=c99 -lm -O3 -DNDEBUG $(INC_PARMS)
+CFLAGS0 = -Winline -std=c99 -lm -g -DNDEBUG $(INC_PARMS)
 ifneq ($(HAS_NEON32),)
 	CFLAGS1 = -DARM_NEON32 -mfloat-abi=hard -mfpu=neon -O3 -std=c99
 	GNCENC  := $(OBJDIR)/common.o $(OBJDIR)/bipartite.o $(OBJDIR)/sncEncoder.o $(OBJDIR)/galois_neon.o $(OBJDIR)/gaussian.o $(OBJDIR)/mt19937ar.o
@@ -50,7 +50,7 @@ vpath %.h src include
 vpath %.c src examples
 
 DEFS    := sparsenc.h common.h galois.h decoderGG.h decoderOA.h decoderBD.h decoderCBD.h decoderPP.h
-RECODER := $(OBJDIR)/sncRecoder.o 
+RECODER := $(OBJDIR)/sncRecoder.o $(OBJDIR)/sncRecoderBATS.o 
 DECODER := $(OBJDIR)/sncDecoder.o
 GGDEC   := $(OBJDIR)/decoderGG.o 
 OADEC   := $(OBJDIR)/decoderOA.o $(OBJDIR)/pivoting.o
@@ -92,12 +92,21 @@ sncRecoder-n-Hop-ST: $(GNCENC) $(GGDEC) $(OADEC) $(BDDEC) $(CBDDEC) $(PPDEC) $(R
 sncRecoderFly: libsparsenc.so test.butterfly.c
 	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
 
+sncHAPmulticast: libsparsenc.so test.HAPmulticast.c
+	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
+
+sncD2Dmulticast: libsparsenc.so test.D2Dmulticast.c
+	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
+
+sncRecoderNhopBATS: libsparsenc.so test.batsRecoder.c
+	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
+
 $(OBJDIR)/%.o: $(OBJDIR)/%.c $(DEFS)
 	$(CC) -c -fpic -o $@ $< $(CFLAGS0) $(CFLAGS1) $(CFLAGS2)
 
 .PHONY: clean
 clean:
-	rm -f *.o $(OBJDIR)/*.o libsparsenc.so sncDecoders sncDecoderST sncDecodersFile sncRecoder2Hop sncRecoder-n-Hop sncRecoderFly sncRestore sncRLNC
+	rm -f *.o $(OBJDIR)/*.o libsparsenc.so sncDecoders sncDecoderST sncDecodersFile sncRecoder2Hop sncRecoder-n-Hop sncRecoder-n-Hop-ST sncRecoderFly sncRestore sncRLNC sncHAPmulticast sncD2Dmulticast sncRecoderNhopBATS
 
 install: libsparsenc.so
 	cp include/sparsenc.h /usr/include/
