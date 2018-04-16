@@ -158,7 +158,7 @@ void process_packet_OA(struct decoding_context_OA *dec_ctx, struct snc_packet *p
     int pivot;
 
     // Reconstruct the batch information (packet id's of the batch content)
-    if (gid > maxseen) {
+    if (dec_ctx->sc->params.type == BATS_SNC && gid > maxseen) {
         maxseen = gid;
         if (maxseen >= BALLOC*(1+nrealloc)) {
             // realloc batch pointers

@@ -3,6 +3,8 @@
  */
 #include <stdint.h>
 #include "common.h"
+int BALLOC = 500;
+
 static int loglevel = 0;    // log level for the library
 static int compare_int(const void *elem1, const void *elem2);
 void set_loglevel(const char *level)

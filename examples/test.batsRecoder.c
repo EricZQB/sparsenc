@@ -8,8 +8,6 @@
 
 #include "sparsenc.h"
 
-int BALLOC = 500;
-
 char usage[] = "Simulate fiex-degree BATS codes over n-hop lossy line networks\n\
                 \n\
                 S ---(1-pe_1)---> V1 ---(1-pe_2)---> ... ---(1-pe_n)---> D\n\
@@ -23,7 +21,8 @@ char usage[] = "Simulate fiex-degree BATS codes over n-hop lossy line networks\n
                 bufsize  - buffer size at intermediate nodes\n\
                 nhop     - number of hops (integer)\n\
                 pe_i     - erasure probabilities of each hop. The number of pe_i's is either equal to nhop,\n\
-                           or only one which corresponds to the homogeneous case (all hops have the same erausre rate)\n";
+                           or only one which corresponds to the homogeneous case (all hops have the same erausre rate)\n\
+                R_i      - Number of packets sent on each hop in each time slot, usage is similar as pe_i.\n";
 int main(int argc, char *argv[])
 {
     if (argc < 10 || (argc != 10 && argc != 8 + 2 * atoi(argv[7]))) {
