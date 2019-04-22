@@ -65,7 +65,12 @@ struct decoding_context_CBD *create_dec_context_CBD(struct snc_parameters *sp)
         goto AllocError;
     }
     for (i=0; i<numpp; i++) {
-        dec_ctx->message[i] = calloc(pktsize, sizeof(GF_ELEMENT));
+        if (dec_ctx->sc->params.gfpower == 1 || dec_ctx->sc->params.gfpower == 8) {
+            dec_ctx->message[i] = calloc(pktsize, sizeof(GF_ELEMENT));
+        } else {
+            // Use one GF_ELEMENT for each coded symbol even if GF size is small. This is for easy access.
+            dec_ctx->message[i] = calloc(ALIGN(pktsize*8, dec_ctx->sc->params.gfpower), sizeof(GF_ELEMENT));
+        }
         if (dec_ctx->message[i] == NULL) {
             fprintf(stderr, "%s: calloc dec_ctx->message[%d] failed\n", fname, i);
             goto AllocError;
@@ -114,10 +119,13 @@ void process_packet_CBD(struct decoding_context_CBD *dec_ctx, struct snc_packet 
         // This is normal GNC packet
         for (i=0; i<gensize; i++) {
             int index = dec_ctx->sc->gene[pkt->gid]->pktid[i];
-            if (dec_ctx->sc->params.bnc) {
+            if (dec_ctx->sc->params.gfpower==1) {
                 ces[index] = get_bit_in_array(pkt->coes, i);
-            } else {
+            } else if (dec_ctx->sc->params.gfpower==8) {
                 ces[index] = pkt->coes[i];
+            } else {
+                //ces[index] = read_bits_from_byte_array(pkt->coes, dec_ctx->sc->params.size_g, dec_ctx->sc->params.gfpower, i);
+                ces[index] = read_bits_from_byte_array(pkt->coes, ALIGN(gensize * dec_ctx->sc->params.gfpower, 8), dec_ctx->sc->params.gfpower, i);
             }
         }
     }
@@ -154,8 +162,19 @@ static int process_vector_CBD(struct decoding_context_CBD *dec_ctx, GF_ELEMENT *
     GF_ELEMENT quotient;
 
     int gensize = dec_ctx->sc->params.size_g;
-    int pktsize = dec_ctx->sc->params.size_p;
+    int pktsize = dec_ctx->sc->params.size_p;           // in bytes
     int numpp   = dec_ctx->sc->snum + dec_ctx->sc->cnum;
+    int gfpower = dec_ctx->sc->params.gfpower;
+    int scale   = (gfpower == 1 || gfpower == 8) ? pktsize : ALIGN(pktsize*8, gfpower);  // How many coded symbols using the corresponding GF
+
+    GF_ELEMENT *msg_expa = message;
+    // Expand messages if ncessary: the GF is GF(4), GF(8), ..., GF(128)
+    if (gfpower != 1 && gfpower != 8) {
+        msg_expa = calloc(scale, sizeof(GF_ELEMENT));          // to store expanded message
+        for (j=0; j<scale; j++) {
+            msg_expa[j] = read_bits_from_byte_array(message, pktsize, gfpower, j);
+        }
+    }
 
     int rowop = 0;
     for (i=0; i<numpp; i++) {
@@ -165,12 +184,12 @@ static int process_vector_CBD(struct decoding_context_CBD *dec_ctx, GF_ELEMENT *
                 assert(dec_ctx->row[i]->elem[0]);
                 quotient = galois_divide(vector[i], dec_ctx->row[i]->elem[0]);
                 galois_multiply_add_region(&(vector[i]), dec_ctx->row[i]->elem, quotient, dec_ctx->row[i]->len);
-                galois_multiply_add_region(message, dec_ctx->message[i], quotient, pktsize);
-                dec_ctx->operations += 1 + dec_ctx->row[i]->len + pktsize;
+                galois_multiply_add_region(msg_expa, dec_ctx->message[i], quotient, scale);
+                dec_ctx->operations += 1 + dec_ctx->row[i]->len + scale;
                 if (!dec_ctx->de_precode) {
-                    dec_ctx->ops1 += 1 + dec_ctx->row[i]->len + pktsize;
+                    dec_ctx->ops1 += 1 + dec_ctx->row[i]->len + scale;
                 } else {
-                    dec_ctx->ops2 += 1 + dec_ctx->row[i]->len + pktsize;
+                    dec_ctx->ops2 += 1 + dec_ctx->row[i]->len + scale;
                 }
                 rowop += 1;
             } else {
@@ -200,10 +219,13 @@ static int process_vector_CBD(struct decoding_context_CBD *dec_ctx, GF_ELEMENT *
             fprintf(stderr, "%s: calloc dec_ctx->row[%d]->elem failed\n", fname, pivot);
         memcpy(dec_ctx->row[pivot]->elem, &(vector[pivot]), len*sizeof(GF_ELEMENT));
         assert(dec_ctx->row[pivot]->elem[0]);
-        memcpy(dec_ctx->message[pivot], message,  pktsize*sizeof(GF_ELEMENT));
+        memcpy(dec_ctx->message[pivot], msg_expa,  scale*sizeof(GF_ELEMENT));
         if (get_loglevel() == TRACE) 
             printf("received-DoF %d new-DoF %d row_ops: %d\n", dec_ctx->DoF, pivot, rowop);
         dec_ctx->DoF += 1;
+    }
+    if (gfpower != 1 && gfpower != 8) {
+        free(msg_expa);
     }
     return pivot;
 }
@@ -260,6 +282,9 @@ static void finish_recovering_CBD(struct decoding_context_CBD *dec_ctx)
     int gensize = dec_ctx->sc->params.size_g;
     int pktsize = dec_ctx->sc->params.size_p;
     int numpp = dec_ctx->sc->snum + dec_ctx->sc->cnum;
+    int gfpower = dec_ctx->sc->params.gfpower;
+    int scale   = (gfpower == 1 || gfpower == 8) ? pktsize : ALIGN(pktsize*8, gfpower);  // How many coded symbols using the corresponding GF
+
     int i, j;
     int len;
     GF_ELEMENT quotient;
@@ -271,21 +296,27 @@ static void finish_recovering_CBD(struct decoding_context_CBD *dec_ctx)
                 continue;
             assert(dec_ctx->row[i]->elem[0]);
             quotient = galois_divide(dec_ctx->row[j]->elem[i-j], dec_ctx->row[i]->elem[0]);
-            galois_multiply_add_region(dec_ctx->message[j], dec_ctx->message[i], quotient, pktsize);
-            dec_ctx->operations += (pktsize + 1);
-            dec_ctx->ops3 += (pktsize + 1);
+            galois_multiply_add_region(dec_ctx->message[j], dec_ctx->message[i], quotient, scale);
+            dec_ctx->operations += (scale + 1);
+            dec_ctx->ops3 += (scale + 1);
             dec_ctx->row[j]->elem[i-j] = 0;
         }
         /* convert diagonal to 1*/
         if (dec_ctx->row[i]->elem[0] != 1) {
-            galois_multiply_region(dec_ctx->message[i], galois_divide(1, dec_ctx->row[i]->elem[0]), pktsize);
-            dec_ctx->operations += (pktsize + 1);
-            dec_ctx->ops3 += (pktsize + 1);
+            galois_multiply_region(dec_ctx->message[i], galois_divide(1, dec_ctx->row[i]->elem[0]), scale);
+            dec_ctx->operations += (scale + 1);
+            dec_ctx->ops3 += (scale + 1);
             dec_ctx->row[i]->elem[0] = 1;
         }
         /* save decoded packet */
         dec_ctx->sc->pp[i] = calloc(pktsize, sizeof(GF_ELEMENT));
-        memcpy(dec_ctx->sc->pp[i], dec_ctx->message[i], pktsize*sizeof(GF_ELEMENT));
+        if (gfpower == 1 || gfpower == 8) { 
+            memcpy(dec_ctx->sc->pp[i], dec_ctx->message[i], pktsize*sizeof(GF_ELEMENT));
+        } else {
+            for (j=0; j<scale; j++) {
+                pack_bits_in_byte_array(dec_ctx->sc->pp[i], dec_ctx->sc->params.size_p, dec_ctx->message[i][j], gfpower, j);   // compress the expanded message to original length
+            }
+        }
     }
     dec_ctx->finished = 1;
     if (get_loglevel() == TRACE) {

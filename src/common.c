@@ -3,6 +3,7 @@
  */
 #include <stdint.h>
 #include "common.h"
+#include "galois.h"
 int BALLOC = 500;
 
 static int loglevel = 0;    // log level for the library
@@ -107,6 +108,121 @@ void free_list(struct node_list *list)
     }
 }
 
+/**
+ * Pack the small integers of equal length than len-bits in compact form in an array of bytes.
+ * e.g. suppose all co's are <8, then every 3 bits represent an integer in the memory
+ * pointed by coes
+ * length - number of bits every co may occupy (Note: len <= 8)
+ * i - the itndex of the such integer co in the memory from the beginning of coes[0]
+ *     i=0,1,...
+ *
+ * Pay attention to the boundary of the byte array
+ */
+
+inline void pack_bits_in_byte_array(unsigned char *coes, int nbytes, unsigned char co, int len, int i)
+{
+    // Memory check
+    if ((i - 1) * len >= 8 * nbytes) {
+        printf("Error: accessing unauthorized memeory area.\n");
+        exit(1);
+    }
+    int h = (len * i) % 8;          // position of the first bit of co in a byte
+    int n = (len * i) / 8;          // index of byte where the first bit of co falls in
+    // E.g.
+    // coes:    [ ][ ][ ][ ][ ][ ][ ][ ]   [ ][ ][ ][ ][ ][ ][ ][ ]
+    // co                          x  x     x  x  x  x
+    // len=6, i=1: h=6, n=0
+    //
+    // coes:    [ ][ ][ ][ ][ ][ ][ ][ ]   [ ][ ][ ][ ][ ][ ][ ][ ]
+    // co                                      x  x  x
+    // len=3, i=3: h=1, n=1
+    //
+
+    unsigned char x, y, mask;
+    // determine whether the integer occupies bits across bytes
+    if (h + len <= 8) {
+        // the i-th integer is in one byte
+        x = co << (8 - (h + len)); //
+        // clear the corresponding bits
+        mask = ~((0xffU >> (8 - len)) << (8 - (h + len)));
+        coes[n] &= mask;
+        // set the corresponding bits
+        coes[n] |= x;
+    } else {
+        // the i-th integer is across two bytes
+        int lo = (h + len) % 8;     // number of left-over bits on the next byte
+        // part 1: clear and set the corresponding bits on the tail of the first byte;
+        x = co >> lo;                       // higher bits of co
+        mask = ~(0xffU >> (8 - (len-lo)));
+        coes[n] &= mask;
+        coes[n] |= x;
+        // part 2: clear and set the corresponding bits at the head of the next byte
+        // if not reaching the boundary of the byte array.
+        if (len * i > 8 * nbytes) {
+            printf("pack_bits_in_byte_array(): reaching boundary.\n");
+        } else {
+            y = co << (8 - lo);             // lower bits of co (now at the head of a byte)
+            mask = ~(0xffU << (8 - lo));
+            coes[n+1] &= mask;              // clear the previous bits of coes[n+1]
+            coes[n+1] |= y;
+        }
+    }
+    return;
+}
+
+inline unsigned char read_bits_from_byte_array(unsigned char *coes, int nbytes, int len, int i)
+{
+    // Memory check
+    if ((i - 1) * len >= 8 * nbytes) {
+        printf("Error: accessing unauthorized memeory area.\n");
+        exit(1);
+    }
+    int h = (len * i) % 8;          // position of the first bit of co in a byte
+    int n = (len * i) / 8;          // index of byte where the first bit of co falls in
+    unsigned char x, y, mask;
+    unsigned char co = 0;
+    if (h + len <=8) {
+        mask = 0xffU >> (8 - len);         // len-1's mask
+        mask = mask << (8 - (h + len));
+        co = (mask & coes[n]) >> (8 - (h + len));
+    } else {
+        int lo = (h + len) % 8;         // number of bits on the "next" byte, so (len-lo) on the former
+        x = coes[n] & (0xffU >> (8 - (len - lo)));  // bits at the tail of the first byte
+        if (len * i <= 8 * nbytes) {
+            y = coes[n+1] >> (8 - lo);              // bits at the head of the next byte
+            co = (x << lo) | y;                     // combine the two parts
+        } else {
+            // Reaching the boundary, so only read bits in x
+            printf("read_bits_from_byte_array(): reaching boundary.\n");
+            co = (x << lo);                         // only read the higher bits of the intented len bits
+        }
+    }
+    return co;
+}
+
+// A wrapper function of multiply_add_region for GF(2^2), ..., GF(2^7)
+// nelem - number of GF(4), GF(8), GF(16), ..., GF(128) elements
+// nbytes - number of bytes pointed by dst and src
+void galois2n_multiply_add_region(GF_ELEMENT *dst, GF_ELEMENT *src, GF_ELEMENT multiplier, int gfpower, int nelem, int nbytes)
+{
+    if (multiplier == 0) {
+        // add nothing
+        return;
+    }
+    int i, j;
+    if (multiplier == 1) {
+        // add is XOR for all GF(2) extension fields
+        for (i=0; i<nbytes; i++)
+            dst[i] ^= src[i];
+        return;
+    }
+    // Complication is here
+    for (j=0; j<nelem; j++) {
+        GF_ELEMENT dst_elem = read_bits_from_byte_array(dst, nbytes, gfpower, j);
+        GF_ELEMENT new_elem = galois_add(dst_elem, galois_multiply(read_bits_from_byte_array(src, nbytes, gfpower, j), multiplier));
+        pack_bits_in_byte_array(dst, nbytes, new_elem, gfpower, j);
+    }
+}
 
 /**
  * Get/set the i-th bit from a sequence of bytes pointed

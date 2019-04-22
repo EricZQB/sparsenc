@@ -2,10 +2,11 @@
 from __future__ import division
 from math import floor, ceil, sqrt
 # from ctypes import *
-from ctypes import cdll, c_int, c_ubyte, c_double, c_long, c_longlong, c_char_p, POINTER, sizeof, byref, cast, memmove, Structure
+from ctypes import cdll, c_int, c_ubyte, c_double, c_long, c_longlong, c_char_p, POINTER, sizeof, byref, cast, memmove, Structure, create_string_buffer
 # code types
 RAND_SNC = 0
 BAND_SNC = 1
+BATS_SNC = 2
 RLNC = 9
 
 # decoder types
@@ -33,30 +34,25 @@ class snc_packet(Structure):
                 ("coes", POINTER(c_ubyte)),
                 ("syms", POINTER(c_ubyte))]
 
-    def serialize(self, size_g, size_p, bnc):
+    def serialize(self, size_g, size_p, gfpower):
         """ Serialize an SNC packet to a binary byte string
         """
         pktstr = bytearray()
         pktstr += c_int(self.gid)
         pktstr += c_int(self.ucid)
-        if bnc == 1:
-            ce_len = int(ceil(size_g/8))  # Python 2/3 compatibility
-        else:
-            ce_len = size_g
+        # Determine the number of bytes occupied by coding coefficients
+        ce_len = int(ceil(size_g * gfpower / 8));# Python 2/3 compatibility
         pktstr += cast(self.coes, POINTER(c_ubyte * ce_len))[0]
         pktstr += cast(self.syms, POINTER(c_ubyte * size_p))[0]
         return pktstr
 
-    def deserialize(self, pktstr, size_g, size_p, bnc):
+    def deserialize(self, pktstr, size_g, size_p, gfpower):
         """ Deserialize a byte stream and fill in an existing snc_packet
         instance
         """
         self.gid = c_int.from_buffer_copy(pktstr)
         self.ucid = c_int.from_buffer_copy(pktstr, sizeof(c_int))
-        if bnc == 1:
-            ce_len = int(ceil(size_g/8))  # Python 2/3 compatibility
-        else:
-            ce_len = size_g
+        ce_len = int(ceil(size_g * gfpower / 8));# Python 2/3 compatibility
         coes = (c_ubyte * ce_len).from_buffer_copy(pktstr, 2*sizeof(c_int))
         memmove(self.coes, coes, ce_len)
         syms = (c_ubyte * size_p).from_buffer_copy(pktstr, 2*sizeof(c_int)+ce_len)
@@ -64,16 +60,16 @@ class snc_packet(Structure):
 
 
 class snc_parameters(Structure):
-    _fields_ = [("datasize", c_long),
-                ("size_p", c_int),
-                ("size_c", c_int),
-                ("size_b", c_int),
-                ("size_g", c_int),
-                ("type",   c_int),
-                ("bpc",    c_int),
-                ("bnc",    c_int),
-                ("sys",    c_int),
-                ("seed",   c_int)]
+    _fields_ = [("datasize",    c_long),
+                ("size_p",      c_int),
+                ("size_c",      c_int),
+                ("size_b",      c_int),
+                ("size_g",      c_int),
+                ("type",        c_int),
+                ("bpc",         c_int),
+                ("gfpower",     c_int),
+                ("sys",         c_int),
+                ("seed",        c_int)]
 
 
 class snc_decoder(Structure):

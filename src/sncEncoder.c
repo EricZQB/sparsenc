@@ -10,6 +10,7 @@
 #include "galois.h"
 #include "sparsenc.h"
 
+static int GFpower;  // GF power of encoding
 
 extern int BALLOC; // number of batch pointers allocation in one shot
 static int currbid = -1;   // used by BATS-like codes, ID of the current sending batch
@@ -56,7 +57,7 @@ struct snc_context *snc_create_enc_context(unsigned char *buf, struct snc_parame
     sc->params.size_g   = sp->size_g;
     sc->params.type     = sp->type;
     sc->params.bpc      = sp->bpc;
-    sc->params.bnc      = sp->bnc;
+    sc->params.gfpower  = sp->gfpower;
     sc->params.sys      = sp->sys;
     sc->params.seed     = sp->seed;
     /* Seed local random number generator for precoding and/or random grouping
@@ -113,7 +114,8 @@ struct snc_context *snc_create_enc_context(unsigned char *buf, struct snc_parame
         return NULL;
     }
 
-    constructField();   // Construct Galois Field
+    constructField(sc->params.gfpower);   // Construct Galois Field
+    GFpower = snc_get_GF_power(&sc->params);
     if (buf != NULL) {
         int alread = 0;
         int i;
@@ -206,7 +208,7 @@ static int create_context_from_params(struct snc_context *sc)
             fprintf(stderr, "%s: malloc BP_graph\n", fname);
             return (-1);
         }
-        sc->graph->binaryce = sc->params.bpc;     // If precode in GF(2), edges use 1 as coefficient
+        sc->graph->binaryce = sc->params.bpc;     // Note: if precode in GF(2), edges use 1 as coefficient
         if (create_bipartite_graph(sc->graph, sc->snum, sc->cnum) < 0)
             return (-1);
     }
@@ -252,7 +254,8 @@ static int create_context_from_params(struct snc_context *sc)
                 break;
         }
     } else {
-        // In the first time, only allocate BALLOC batches. If more is needed, realloc() will be called later
+        // Potentially unlimited number of batches
+        // In the first time, only allocate BALLOC batches. If more is needed, realloc() will be called.
         sc->gene  = calloc(BALLOC, sizeof(struct subgeneration*));
         if ( sc->gene == NULL ) {
             fprintf(stderr, "%s: malloc sc->gene\n", fname);
@@ -555,12 +558,9 @@ struct snc_packet *snc_alloc_empty_packet(struct snc_parameters *sp)
     if (pkt == NULL)
         return NULL;
     pkt->ucid = -1;
-    if (sp->bnc) {
-        // For binary code, coding coefficients (bits) are condensed
-        pkt->coes = calloc(ALIGN(sp->size_g, 8), sizeof(GF_ELEMENT));
-    } else {
-        pkt->coes = calloc(sp->size_g, sizeof(GF_ELEMENT));
-    }
+    // coding coefficients (bits) are condensed
+    pkt->coes = calloc(ALIGN(sp->size_g * sp->gfpower, 8), sizeof(GF_ELEMENT));
+
     if (pkt->coes == NULL)
         goto AllocErr;
     pkt->syms = calloc(sp->size_p, sizeof(GF_ELEMENT));
@@ -572,6 +572,50 @@ struct snc_packet *snc_alloc_empty_packet(struct snc_parameters *sp)
 AllocErr:
     snc_free_packet(pkt);
     return NULL;
+}
+
+// Length of serialized snc_packet (unit: bytes)
+int snc_packet_length(struct snc_parameters *param)
+{
+    int gid_len  = 4;      // use 4 bytes to store gid (signed int)
+    int ucid_len = 4;      // use 4 bytes to store ucid (signed int)
+    int ces_len  = ALIGN(param->size_g * param->gfpower, 8);
+    int sym_len  = param->size_p;
+    int strlen = gid_len + ucid_len + ces_len + sym_len;
+    return strlen;
+}
+
+// Serialize snc_packet to a byte buffer
+unsigned char *snc_serialize_packet(struct snc_packet *pkt, struct snc_parameters *param)
+{
+    int pktnum = ALIGN(param->datasize, param->size_p) + param->size_c;
+    int gid_len = (param->size_g == pktnum && param->size_b == param->size_g && param->sys !=1) ? 0 : 4;  // don't pack gid if it's non-systematic RLNC
+    int ucid_len = (param->sys == 1) ? 4 : 0;  // pack ucid using 4 bytes only if the code is systematic
+    int ces_len  = ALIGN(param->size_g * param->gfpower, 8);
+    int sym_len  = param->size_p;
+    int strlen = gid_len + ucid_len + ces_len + sym_len;
+    unsigned char *pktstr = calloc(strlen, sizeof(unsigned char));
+    memcpy(pktstr, &pkt->gid, gid_len);
+    memcpy(pktstr+gid_len, &pkt->ucid, ucid_len);
+    memcpy(pktstr+gid_len+ucid_len, pkt->coes, ces_len);
+    memcpy(pktstr+gid_len+ucid_len+ces_len, pkt->syms, sym_len);
+    return pktstr;
+}
+
+// De-serialize packet string to a snc_packet struct
+struct snc_packet *snc_deserialize_packet(unsigned char *pktstr, struct snc_parameters *param)
+{
+    int pktnum = ALIGN(param->datasize, param->size_p) + param->size_c;
+    int gid_len = (param->size_g == pktnum && param->size_b == param->size_g && param->sys !=1) ? 0 : 4;
+    int ucid_len = param->sys == 1 ? 4 : 0;
+    int ces_len  = ALIGN(param->size_g * param->gfpower, 8);
+    int sym_len  = param->size_p;
+    struct snc_packet *pkt = snc_alloc_empty_packet(param);
+    memcpy(&pkt->gid, pktstr, gid_len);
+    memcpy(&pkt->ucid, pktstr+gid_len, ucid_len);
+    memcpy(pkt->coes, pktstr+gid_len+ucid_len, ces_len);
+    memcpy(pkt->syms, pktstr+gid_len+ucid_len+ces_len, sym_len);
+    return pkt;
 }
 
 /* Generate a GNC coded packet. Memory is allocated in the function. */
@@ -593,8 +637,8 @@ struct snc_packet *snc_duplicate_packet(struct snc_packet *pkt, struct snc_param
     struct snc_packet *dup_pkt = malloc(sizeof(struct snc_packet));
     dup_pkt->gid = pkt->gid;
     dup_pkt->ucid = pkt->ucid;
-    dup_pkt->coes = malloc(sizeof(GF_ELEMENT) * param->size_g);
-    memcpy(dup_pkt->coes, pkt->coes, sizeof(GF_ELEMENT)*param->size_g);
+    dup_pkt->coes = calloc(ALIGN(param->size_g * param->gfpower, 8), sizeof(GF_ELEMENT));
+    memcpy(dup_pkt->coes, pkt->coes, sizeof(GF_ELEMENT)*ALIGN(param->size_g*param->gfpower,8));
     dup_pkt->syms = malloc(sizeof(GF_ELEMENT) * param->size_p);
     memcpy(dup_pkt->syms, pkt->syms, sizeof(GF_ELEMENT)*param->size_p);
     return dup_pkt;
@@ -608,11 +652,14 @@ int snc_generate_packet_im(struct snc_context *sc, struct snc_packet *pkt)
 {
     if (pkt == NULL || pkt->coes == NULL || pkt->syms == NULL)
         return -1;
+    memset(pkt->coes, 0, ALIGN(sc->params.size_g*sc->params.gfpower,8) * sizeof(GF_ELEMENT));
+    /*
     if (sc->params.bnc) {
         memset(pkt->coes, 0, ALIGN(sc->params.size_g, 8)*sizeof(GF_ELEMENT));
     } else {
         memset(pkt->coes, 0, sc->params.size_g*sizeof(GF_ELEMENT));
     }
+    */
     memset(pkt->syms, 0, sc->params.size_p*sizeof(GF_ELEMENT));
     if (sc->params.type == RAND_SNC || sc->params.type == BAND_SNC || sc->params.type == WINDWRAP_SNC) {
         int gid = schedule_generation(sc);
@@ -626,6 +673,7 @@ int snc_generate_packet_im(struct snc_context *sc, struct snc_packet *pkt)
             if (batsent >= sc->params.size_b && (currbid+1) % BALLOC == 0 ) {
                 // Time to switch a batch, but the allocated batch pointers have been used out. realloc()
                 // We need to allocate more memory for batch pointers
+                // TODO: we might want to just discard the previous batches, and replace them with new ones.
                 int bid = currbid + 1;
                 printf("Need to allocate more batch pointers, calling realloc()...\n");
                 sc->gene = realloc(sc->gene, sizeof(struct subgeneration*)*(bid+BALLOC));
@@ -678,20 +726,43 @@ static void encode_packet(struct snc_context *sc, struct subgeneration *subgen, 
         return;
     }
 
-    // Send coded packet
-    int i;
+    // generate coded packet
+    int i, j;
     GF_ELEMENT co;
     for (i=0; i<sc->params.size_g; i++) {
         pktid = subgen->pktid[i];  // The i-th packet of the gid-th generation
-        if (sc->params.bnc) {
-            co = (GF_ELEMENT) rand() % 2;                   // Binary network code
-            if (co == 1)
+
+        // co = (GF_ELEMENT) rand() % GFsize;
+        co = (GF_ELEMENT) genrand_int32() % (1 << GFpower);
+        if (GFpower == 1) {
+            if (co == 1) {
                 set_bit_in_array(pkt->coes, i);             // Set the corresponding coefficient as 1
-        } else {
-            co = (GF_ELEMENT) rand() % (1 << 8);     // Randomly generated coding coefficient
+            }
+        } else if (GFpower == 8){
             pkt->coes[i] = co;
+        } else {
+            // each coding coefficient occupys len=2,3,...,7 bits
+            // Pack in the byte array. This may not be as efficient as GF(2) and GF(256)
+            pack_bits_in_byte_array(pkt->coes, sc->params.size_g, co, GFpower, i);
         }
-        galois_multiply_add_region(pkt->syms, sc->pp[pktid], co, sc->params.size_p);
+        
+        if (GFpower == 1 || GFpower == 8) {
+            galois_multiply_add_region(pkt->syms, sc->pp[pktid], co, sc->params.size_p);
+        } else {
+            // Treat information bytes as individual GF_ELEMENTS of length 'GFpower'
+            // Caveat: Each source packet has to contain multiples of GFpower bits, since
+            // the read_bits_, pack_bits_ functions cannot handle right boundray correctly
+            // at present.
+            int nelem = ALIGN(sc->params.size_p*8, GFpower);
+            galois2n_multiply_add_region(pkt->syms, sc->pp[pktid], co, GFpower, nelem, sc->params.size_p);
+            /*
+            for (j=0; j<ALIGN(sc->params.size_p*8, GFpower); j++) {
+                GF_ELEMENT tmp1 = read_bits_from_byte_array(pkt->syms, sc->params.size_p, GFpower, j);
+                GF_ELEMENT tmp2 = galois_multiply(read_bits_from_byte_array(sc->pp[pktid], sc->params.size_p, GFpower, j), co);
+                pack_bits_in_byte_array(pkt->syms, sc->params.size_p, galois_add(tmp1, tmp2), GFpower, j);
+            }
+            */
+        }
     }
     pkt->ucid = -1;
     // sc->nccount[gid] += 1;
@@ -785,12 +856,6 @@ void print_code_summary(struct snc_context *sc, double overhead, double operatio
                 strcpy(typestr2, "NonBinaryLDPC");
         }
     }
-    char typestr3[20];
-    if (sc->params.bnc) {
-        strcpy(typestr3, "BinaryNC");
-    } else {
-        strcpy(typestr3, "NonBinaryNC");
-    }
     char typestr4[20];
     if (sc->params.sys) {
         strcpy(typestr4, "Systematic");
@@ -808,7 +873,7 @@ void print_code_summary(struct snc_context *sc, double overhead, double operatio
         printf("size_b: %d ", sc->params.size_b);
         printf("size_g: %d ", sc->params.size_g);
     }
-    printf("type: [%s::%s::%s::%s] ", typestr, typestr2, typestr3, typestr4);
+    printf("type: [%s::GF(2^%d)::%s::%s] ", typestr, sc->params.gfpower, typestr2, typestr4);
     if (sc->params.type == BATS_SNC)
         printf("gnum: %d ", currbid+1);
     else
@@ -821,3 +886,16 @@ void print_code_summary(struct snc_context *sc, double overhead, double operatio
     }
 }
 
+
+// return the GF size used by the code
+int snc_get_GF_power(struct snc_parameters *sp) {
+    int GF_power = sp->gfpower;
+
+    // If GF_POWER env is set (for research), overwrite params
+    char *gf_evar = getenv("GF_POWER");
+    if ( gf_evar != NULL && atoi(gf_evar) <= 8) {
+        GF_power = atoi(gf_evar);
+        sp->gfpower = GF_power;
+    }
+    return GF_power;
+}

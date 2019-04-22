@@ -28,7 +28,7 @@ endif
 
 GNCENC  := $(OBJDIR)/common.o $(OBJDIR)/bipartite.o $(OBJDIR)/sncEncoder.o $(OBJDIR)/galois.o $(OBJDIR)/gaussian.o $(OBJDIR)/mt19937ar.o
 
-CFLAGS0 = -Winline -std=c99 -lm -g -DNDEBUG $(INC_PARMS)
+CFLAGS0 = -Winline -std=c99 -lm -O3 -DNDEBUG $(INC_PARMS)
 ifneq ($(HAS_NEON32),)
 	CFLAGS1 = -DARM_NEON32 -mfloat-abi=hard -mfpu=neon -O3 -std=c99
 	GNCENC  := $(OBJDIR)/common.o $(OBJDIR)/bipartite.o $(OBJDIR)/sncEncoder.o $(OBJDIR)/galois_neon.o $(OBJDIR)/gaussian.o $(OBJDIR)/mt19937ar.o
@@ -63,19 +63,22 @@ all: sncDecoder sncDecoderFile sncRecoder2Hop sncRestore
 
 libsparsenc.so: $(GNCENC) $(GGDEC) $(OADEC) $(BDDEC) $(CBDDEC) $(PPDEC) $(RECODER) $(DECODER)
 	$(CC) -shared -o libsparsenc.so $^
+
+libsparsenc.a: $(GNCENC) $(GGDEC) $(OADEC) $(BDDEC) $(CBDDEC) $(PPDEC) $(RECODER) $(DECODER)
+	ar rcs $@ $^
 	
 sncRLNC: $(GNCENC) $(GGDEC) $(OADEC) $(BDDEC) $(CBDDEC) $(PPDEC) $(RECODER) $(DECODER) test.RLNC.c
 	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^
 
 #Test snc decoder
 sncDecoders: libsparsenc.so test.decoders.c
-	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
+	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^ -L. -lsparsenc -lm
 #Test snc decoder linked statically
 sncDecoderST: $(GNCENC) $(GGDEC) $(OADEC) $(BDDEC) $(CBDDEC) $(PPDEC) $(RECODER) $(DECODER) test.decoders.c
 	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^
 #Test snc store/restore decoder
 sncRestore: libsparsenc.so test.restore.c
-	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
+	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^ 
 #Test decoder for files
 sncDecodersFile: libsparsenc.so test.file.decoders.c
 	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
@@ -84,10 +87,13 @@ sncRecoder2Hop: libsparsenc.so test.2hopRecoder.c
 	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
 #Test recoder
 sncRecoder-n-Hop: libsparsenc.so test.nhopRecoder.c
-	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
+	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^ -L. -lsparsenc -lm
 #Test recoder, statically linked
 sncRecoder-n-Hop-ST: $(GNCENC) $(GGDEC) $(OADEC) $(BDDEC) $(CBDDEC) $(PPDEC) $(RECODER) $(DECODER) test.nhopRecoder.c
-	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^
+	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^ -lm
+#Test recoder, statically linked
+sncRecoder-n-Hop-Gilbert-ST: $(GNCENC) $(GGDEC) $(OADEC) $(BDDEC) $(CBDDEC) $(PPDEC) $(RECODER) $(DECODER) test.nhopRecoder-gilbert.c
+	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^ -lm
 #Test recoder
 sncRecoderFly: libsparsenc.so test.butterfly.c
 	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
@@ -98,15 +104,25 @@ sncHAPmulticast: libsparsenc.so test.HAPmulticast.c
 sncD2Dmulticast: libsparsenc.so test.D2Dmulticast.c
 	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
 
+snc2UserD2D: libsparsenc.so test.2UserD2DCoop.c
+	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
+
+snc2pairD2D: libsparsenc.so test.2pairD2D.c
+	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
+
+snc4pairD2D: libsparsenc.so test.4pairD2D.c
+	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
+
 sncRecoderNhopBATS: libsparsenc.so test.batsRecoder.c
 	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
 
 $(OBJDIR)/%.o: $(OBJDIR)/%.c $(DEFS)
 	$(CC) -c -fpic -o $@ $< $(CFLAGS0) $(CFLAGS1) $(CFLAGS2)
+#$(CC) -c -o $@ $< $(CFLAGS0) $(CFLAGS1) $(CFLAGS2)
 
 .PHONY: clean
 clean:
-	rm -f *.o $(OBJDIR)/*.o libsparsenc.so sncDecoders sncDecoderST sncDecodersFile sncRecoder2Hop sncRecoder-n-Hop sncRecoder-n-Hop-ST sncRecoderFly sncRestore sncRLNC sncHAPmulticast sncD2Dmulticast sncRecoderNhopBATS
+	rm -f *.o $(OBJDIR)/*.o libsparsenc.so libsparsenc.a sncDecoders sncDecoderST sncDecodersFile sncRecoder2Hop sncRecoder-n-Hop sncRecoder-n-Hop-ST sncRecoderFly sncRestore sncRLNC sncHAPmulticast sncD2Dmulticast snc2UserD2D sncRecoderNhopBATS snc2pairD2D snc4pairD2D sncRecoder-n-Hop-Gilbert-ST
 
 install: libsparsenc.so
 	cp include/sparsenc.h /usr/include/

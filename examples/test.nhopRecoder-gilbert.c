@@ -7,13 +7,18 @@
 #include <string.h>
 #include "sparsenc.h"
 
+// Gilbert-Elliott model
+#define CH_GOOD 0
+#define CH_BAD  1
+int channel_state[256] = {CH_GOOD};  // save channel states for up to 256 links
+
 char usage[] = "Simulate n-hop lossy line networks\n\
                 \n\
                 S ---R1(1-pe_1)---> V1 ---R2(1-pe_2)---> ... ---Rn(1-pe_n)---> D\n\
                 \n\
                 usage: ./programName code_t dec_t sched_t datasize size_p size_c\n\
                                      size_b size_g bpc gfpower sys bufsize\n\
-                                     nhop R1 R2 ... pe1 pe2 ...\n\
+                                     nhop pg pb ag ab\n\
                 code_t  - code type: RAND, BAND, WINDWRAP\n\
                 dec_t   - decoder type: GG, OA, BD, CBD\n\
                 sched_t - scheduling type: TRIV, RAND, RANDSYS, MLPI, MLPISYS, NURAND\n\
@@ -27,13 +32,13 @@ char usage[] = "Simulate n-hop lossy line networks\n\
                 sys      - Systematic code (0 or 1)\n\
                 bufsize  - buffer size of each intermediate node\n\
                 nhop     - number of hops (integer)\n\
-                R_i      - packet sending rate (integer) of each hop. The number of R_i's is either equal to nhop,\n\
-                           or 1 which corresponds to that all the hops have equal packet sending rate.\n\
-                pe_i     - erasure probabilities of each hop. The number of pe_i's is either equal to nhop,\n\
-                           or 1 which corresponds to the homogeneous case (all hops have the same erausre rate)\n";
+                pg       - probability of transition from Good to Bad state\n\
+                pb       - probability of transition from Bad to Good state\n\
+                ag       - Proability of successful transmission in the Good state\n\
+                ab       - Proability of successful transmission in the Bad state\n";
 int main(int argc, char *argv[])
 {
-    if (argc < 15 || (argc != 16 && argc != 15 + atoi(argv[13]) && argc != 14+atoi(argv[13])*2)) {
+    if (argc < 18 || (argc != 18 && argc != 14 + 4*atoi(argv[13]))) {
         printf("%s\n", usage);
         exit(1);
     }
@@ -94,22 +99,24 @@ int main(int argc, char *argv[])
     sp.seed     = -1;
     int bufsize = atoi(argv[12]);
     int numhop  = atoi(argv[13]);    // Number of hops of the line network
-    int *rate   = malloc(sizeof(int) * numhop);
-    double *pe  = malloc(sizeof(double) * numhop);
+    int *rate = calloc(numhop, sizeof(int));
+
     int i, j;
+    // (pg, pb, ag, ab) probabilities
+    double *prob = calloc(numhop*4, sizeof(double));
     for (i=0; i<numhop; i++) {
-        if (argc == 16) {
-            rate[i] = atoi(argv[14]);
-            pe[i] = atof(argv[15]);
-        } else if (argc == 14 + atoi(argv[13]) + 1 && atof(argv[15]) >= 1) {
-            rate[i] = atoi(argv[14+i]);
-            pe[i] = atof(argv[14+numhop]);
-        } else if (argc == 14 + atoi(argv[13]) + 1 && atof(argv[15]) < 1) {
-            rate[i] = atoi(argv[14]);
-            pe[i] = atof(argv[15+i]);        
+        rate[i] = 1;
+        if (argc == 18) {
+            // Each hop has identical parameters (pg, pb, h)
+            prob[i*4] = atof(argv[14]);
+            prob[i*4+1] = atof(argv[15]);
+            prob[i*4+2] = atof(argv[16]);
+            prob[i*4+3] = atof(argv[17]);
         } else {
-            rate[i] = atoi(argv[14+i]);
-            pe[i]   = atof(argv[14+numhop+i]);
+            prob[i*4] = atof(argv[14+i*4]);
+            prob[i*4+1] = atof(argv[15+i*4]);
+            prob[i*4+2] = atof(argv[16+i*4]);
+            prob[i*4+3] = atof(argv[17+i*4]);
         }
     }
 
@@ -172,7 +179,8 @@ int main(int argc, char *argv[])
                     if (snc_recode_packet_im(buffer[i-1], pkt, sched_t) == -1)
                         continue;
                 }
-                if (rand() % 100 >= pe[i] * 100) {
+                // Gilbert packet loss model
+                if (!Gilbert_Elliott_erasure(prob[4*i], prob[i*4+1], prob[i*4+2], prob[i*4+3], i)) {
                     if (i < numhop-1) {
                         snc_buffer_packet(buffer[i], pkt);   // intermediate ndoes buffer packets
                     } else {
@@ -198,8 +206,10 @@ int main(int argc, char *argv[])
     printf("GF_SIZE: %d \n", (1<<GF_size));
     printf("dec-time: %.6f dec-delay: %.6f bufsize: %d numhop: %d ", ((double) dtime)/CLOCKS_PER_SEC, (double) decode_delay/CLOCKS_PER_SEC, bufsize, numhop);
     for (i=0; i<numhop; i++) {
-        printf("rate[%i]: %d ", i, rate[i]);
-        printf("pe[%i]: %.3f ", i, pe[i]);
+        printf("pg[%i]: %.3f ", i, prob[i*4]);
+        printf("pb[%i]: %.3f ", i, prob[i*4+1]);
+        printf("ag[%i]: %.3f ", i, prob[i*4+2]);
+        printf("ab[%i]: %.3f ", i, prob[i*4+3]);
     }
     printf(" nuses: %d\n", nuse);
 
@@ -214,4 +224,29 @@ int main(int argc, char *argv[])
         snc_free_buffer(buffer[i]);
     snc_free_decoder(decoder);
     return 0;
+}
+
+
+// Determine whether packet loss occurs for link i
+int Gilbert_Elliott_erasure(double pg, double pb, double ag, double ab, int i)
+{
+    // Determine channel state
+    if (channel_state[i] == CH_GOOD) {
+        if (rand() % 100 < pg * 100) {
+            // transition from Good to Bad
+            channel_state[i] = CH_BAD;
+        }
+    } else {
+        if (rand() % 100 < pb * 100) {
+            // transition from Bad to Good
+            channel_state[i] = CH_GOOD;
+        }
+    }
+
+    // Determine erasure depending on the channel state
+    // Erasure occurs with probability 1-h in the Bad state, and with probability 0 in the Good state
+    if ((channel_state[i] == CH_GOOD && rand() % 100 < (1-ag) * 100) || (channel_state[i] == CH_BAD && rand() % 100 < (1-ab) * 100))
+        return 1;
+    else
+        return 0;
 }

@@ -58,11 +58,11 @@ struct snc_parameters {
     long    datasize;   // Data size in bytes.
     int     size_p;     // packet size (in bytes)
     int     size_c;     // number of parity-check
-    int     size_b;     // base generation size of fixed-number subset codes or the BTS for BATS-like codes
-    int     size_g;     // generation size
+    int     size_b;     // base subgeneration size of fixed-number subset codes or the BTS for BATS-like codes
+    int     size_g;     // subgeneration size
     int     type;       // Code type
-    int     bpc;        // binary precode
-    int     bnc;        // binary network coding
+    int     bpc;        // binary precode or GF(256) precode
+    int     gfpower;    // Power of Galois field for NC, supports {1,2,...,8}, i.e., GF(2),...,GF(256)
     int     sys;        // systematic code
     int     seed;       // seed of local RNG
 };
@@ -105,6 +105,15 @@ long snc_recover_to_file(const char *filepath, struct snc_context *sc);
 // Allocate an snc packet with coes and syms being zero
 struct snc_packet *snc_alloc_empty_packet(struct snc_parameters *sp);
 
+// Length of serialized snc_packet (unit: bytes)
+int snc_packet_length(struct snc_parameters *param);
+
+// Serialize snc_packet to a byte buffer
+unsigned char *snc_serialize_packet(struct snc_packet *pkt, struct snc_parameters *param);
+
+// De-serialize packet string to a snc_packet struct
+struct snc_packet *snc_deserialize_packet(unsigned char *pktstr, struct snc_parameters *param);
+
 // Generate an snc packet from the encode context
 struct snc_packet *snc_generate_packet(struct snc_context *sc);
 
@@ -119,6 +128,9 @@ void snc_free_packet(struct snc_packet *pkt);
 
 // Print encode/decode summary of an snc (for benchmarking)
 void print_code_summary(struct snc_context *sc, double overhead, double operations);
+
+// Return the power of the finite field size used by the code (for performance tuning)
+int snc_get_GF_power(struct snc_parameters *sp);
 
 /*------------------------------- sncDecoder -------------------------------*/
 /**

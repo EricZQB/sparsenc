@@ -7,7 +7,7 @@
 #include <string.h>
 #include "sparsenc.h"
 
-char usage[] = "usage: ./sncDecoder code_t dec_t datasize size_p size_c size_b size_g bpc bnc sys\n\
+char usage[] = "usage: ./sncDecoder code_t dec_t datasize size_p size_c size_b size_g bpc gfpower sys\n\
                        code_t   - RAND, BAND, WINDWRAP\n\
                        dec_t    - GG, OA, BD, CBD, PP\n\
                        datasize - Number of bytes\n\
@@ -16,7 +16,7 @@ char usage[] = "usage: ./sncDecoder code_t dec_t datasize size_p size_c size_b s
                        size_b   - Subgeneration distance\n\
                        size_g   - Subgeneration size\n\
                        bpc      - Use binary precode (0 or 1)\n\
-                       bnc      - Use binary network code (0 or 1)\n\
+                       gfpower  - Power of GF size\n\
                        sys      - Systematic code (0 or 1)\n";
 int main(int argc, char *argv[])
 {
@@ -59,7 +59,7 @@ int main(int argc, char *argv[])
     sp.size_b   = atoi(argv[6]);
     sp.size_g   = atoi(argv[7]);
     sp.bpc      = atoi(argv[8]);
-    sp.bnc      = atoi(argv[9]);
+    sp.gfpower  = atoi(argv[9]);
     sp.sys      = atoi(argv[10]);
     sp.seed     = -1;  // Initialize seed as -1
 
@@ -117,6 +117,9 @@ int main(int argc, char *argv[])
     while (snc_decoder_finished(decoder) != 1) {
         struct snc_packet *pkt = snc_generate_packet(sc);
         /* Measure decoding time */
+        unsigned char *pktstr = snc_serialize_packet(pkt, &sp);
+        snc_free_packet(pkt);
+        pkt = snc_deserialize_packet(pktstr, &sp);
         start = clock();
         snc_process_packet(decoder, pkt);
         snc_free_packet(pkt);

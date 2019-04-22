@@ -14,7 +14,7 @@
 typedef unsigned char GF_ELEMENT;
 #endif
 // Galois field arithmetic routines
-int constructField();
+int constructField(int gf_power);
 uint8_t galois_add(uint8_t a, uint8_t b);
 uint8_t galois_sub(uint8_t a, uint8_t b);
 uint8_t galois_multiply(uint8_t a, uint8_t b);

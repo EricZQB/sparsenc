@@ -2,6 +2,8 @@
 #include "galois.h"
 #include "sparsenc.h"
 
+static int GFpower;
+
 static int s_neq_r = 0;  // indicate whether the sending and receiving batch do not match.
                      // i.e., whether there are more than 1 batches buffered
 static int s_count = 0;  // count num of pkts sent from the current sending batch
@@ -20,6 +22,7 @@ struct snc_buffer_bats *snc_create_buffer_bats(struct snc_parameters *sp, int bu
     buf->sbatchid = -1;  // empty buffer
     buf->s_first = -1;
     buf->r_last = -1;
+    GFpower = snc_get_GF_power(&buf->params);
     return buf;
 }
 
@@ -99,6 +102,7 @@ struct snc_packet *snc_recode_packet_bats(struct snc_buffer_bats *buf)
 // Recode a BATS coded packet in a pre-allocated snc_packet space
 int snc_recode_packet_bats_im(struct snc_buffer_bats *buf, struct snc_packet *pkt)
 {
+    int gfpower = buf->params.gfpower;
     if (buf->sbatchid < 0) {
         //printf("Buffer has no batch buffered yet\n");
         return -1;
@@ -139,11 +143,14 @@ int snc_recode_packet_bats_im(struct snc_buffer_bats *buf, struct snc_packet *pk
     pkt->gid = buf->sbatchid;
     pkt->ucid = -1;
     // Clean up pkt
+    memset(pkt->coes, 0, ALIGN(buf->params.size_g * gfpower, 8) * sizeof(GF_ELEMENT));
+    /*
     if (buf->params.bnc) {
         memset(pkt->coes, 0, ALIGN(buf->params.size_g, 8)*sizeof(GF_ELEMENT));
     } else {
         memset(pkt->coes, 0, buf->params.size_g*sizeof(GF_ELEMENT));
     }
+    */
     memset(pkt->syms, 0, sizeof(GF_ELEMENT)*buf->params.size_p);
     // Recoding
     GF_ELEMENT co =0;    
@@ -152,14 +159,40 @@ int snc_recode_packet_bats_im(struct snc_buffer_bats *buf, struct snc_packet *pk
         if (buf->srbuf[pos] == NULL || buf->srbuf[pos]->gid != buf->sbatchid)
             break;      // packets belonging to the same batch must be stored adjacently (TODO: is this really true in the asynchronous mode?).
         // Perform random linear combination of buffered packets belonging to the same batch
-        if (buf->params.bnc == 1) {
-            if ((co = rand() % 2) == 1)
-                galois_multiply_add_region(pkt->coes, buf->srbuf[pos]->coes, co, ALIGN(buf->params.size_g, 8));
-        } else {
-            co = rand() % (1 << 8);
+        co = (GF_ELEMENT) rand() % (1 << gfpower);
+        /*
+        if (GFpower == 1 && co == 1) {
+            galois_multiply_add_region(pkt->coes, buf->srbuf[pos]->coes, co, ALIGN(buf->params.size_g, 8));
+        } else if (GFpower == 8) {
             galois_multiply_add_region(pkt->coes, buf->srbuf[pos]->coes, co, buf->params.size_g);
+        } else {
+            for (int j=0; j<buf->params.size_g; j++) {
+                GF_ELEMENT co_buf = read_bits_from_byte_array(buf->srbuf[pos]->coes, buf->params.size_g, GFpower, j);
+                GF_ELEMENT co_pkt = read_bits_from_byte_array(pkt->coes, buf->params.size_g, GFpower, j);
+                GF_ELEMENT co_new = galois_add(co_pkt, galois_multiply(co_buf, co));
+                pack_bits_in_byte_array(pkt->coes, buf->params.size_g, co_new, GFpower, j);
+            }
         }
+        // random linear combinations of coded symbols 
         galois_multiply_add_region(pkt->syms, buf->srbuf[pos]->syms, co, buf->params.size_p);
+        */
+        if (gfpower == 1) {
+            galois_multiply_add_region(pkt->coes, buf->srbuf[pos]->coes, co, ALIGN(buf->params.size_g, 8));
+        } else if (gfpower == 8) {
+            galois_multiply_add_region(pkt->coes, buf->srbuf[pos]->coes, co, buf->params.size_g);
+        } else {
+            // coding coefficients of 2,3,...,7 bits
+            // int nelem = ALIGN(buf->params.size_g*8, gfpower);
+            galois2n_multiply_add_region(pkt->coes, buf->srbuf[pos]->coes, co, gfpower, buf->params.size_g, ALIGN(buf->params.size_g*gfpower, 8));
+        }
+        // linear combinations of coded symbols
+        if (gfpower == 1 || gfpower == 8) {
+            galois_multiply_add_region(pkt->syms, buf->srbuf[pos]->syms, co, buf->params.size_p);
+        } else {
+            int nelem = ALIGN(buf->params.size_p*8, gfpower);
+            galois2n_multiply_add_region(pkt->syms, buf->srbuf[pos]->syms, co, gfpower, nelem, buf->params.size_p);
+        }
+
     }
     s_count += 1;
     return 0;

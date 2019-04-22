@@ -88,11 +88,14 @@ void process_packet_PP(struct decoding_context_PP *dec_ctx, struct snc_packet *p
         GF_ELEMENT *ces0 = calloc(gensize, sizeof(GF_ELEMENT));
         if (ces0 == NULL)
             fprintf(stderr, "%s: calloc ces0 failed\n", fname);
-        if (dec_ctx->sc->params.bnc) {
+        if (dec_ctx->sc->params.gfpower ==1) {
             for (i=0; i<gensize; i++)
                 ces0[i] = get_bit_in_array(pkt->coes, i);
-        } else {
+        } else if (dec_ctx->sc->params.gfpower == 8) {
             memcpy(ces0, pkt->coes, gensize*sizeof(GF_ELEMENT));
+        } else {
+            for (i=0; i<gensize; i++)
+                ces0[i] = read_bits_from_byte_array(pkt->coes, dec_ctx->sc->params.size_g, dec_ctx->sc->params.gfpower, i);
         }
         int pivot = dec_ctx->sc->gene[pkt->gid]->pktid[0];// By default, the coding coefficient of the pivot candidate is pkt->coes[0]
         int shift = 0;
@@ -156,10 +159,12 @@ void process_packet_PP(struct decoding_context_PP *dec_ctx, struct snc_packet *p
             fprintf(stderr, "%s: calloc ces1 failed\n", fname);
         for (i=0; i<gensize; i++) {
             int index = dec_ctx->sc->gene[pkt->gid]->pktid[i];
-            if (dec_ctx->sc->params.bnc) {
+            if (dec_ctx->sc->params.gfpower == 1) {
                 ces1[index] = get_bit_in_array(pkt->coes, i);
-            } else {
+            } else if (dec_ctx->sc->params.gfpower == 8) {
                 ces1[index] = pkt->coes[i];
+            } else {
+                ces1[index] = read_bits_from_byte_array(pkt->coes, dec_ctx->sc->params.size_g, dec_ctx->sc->params.gfpower, i);
             }
         }
         // Process the full length vector against existing rows

@@ -17,6 +17,7 @@ char usage[] = "Simulate fiex-degree BATS codes over n-hop lossy line networks\n
                 pktsize  - packet size (in bytes)\n\
                 snum     - number of source packets\n\
                 cnum     - number of parity-check packets of precode\n\
+                gfpower  - power of Galois field\n\
                 bts      - batch transmission size: # of packets sent for each batch\n\
                 bufsize  - buffer size at intermediate nodes\n\
                 nhop     - number of hops (integer)\n\
@@ -25,7 +26,7 @@ char usage[] = "Simulate fiex-degree BATS codes over n-hop lossy line networks\n
                 R_i      - Number of packets sent on each hop in each time slot, usage is similar as pe_i.\n";
 int main(int argc, char *argv[])
 {
-    if (argc < 10 || (argc != 10 && argc != 8 + 2 * atoi(argv[7]))) {
+    if (argc < 11 || (argc != 11 && argc != 9 + 2 * atoi(argv[8]))) {
         printf("%s\n", usage);
         exit(1);
     }
@@ -35,20 +36,21 @@ int main(int argc, char *argv[])
     int pktsize = atoi(argv[2]);
     int snum = atoi(argv[3]);
     int cnum = atoi(argv[4]);
-    int bsize = atoi(argv[5]);
-    int bufsize = atoi(argv[6]);
-    int numhop = atoi(argv[7]);
+    int gfpower = atoi(argv[5]);
+    int bsize = atoi(argv[6]);
+    int bufsize = atoi(argv[7]);
+    int numhop = atoi(argv[8]);
     int datasize = snum * pktsize;
     
     double *pe = calloc(numhop, sizeof(double));
     int *rate = calloc(numhop, sizeof(int));
     for (i=0; i<numhop; i++) {
-        if (argc == 10) {
-            pe[i] = atof(argv[8]);
-            rate[i] = atoi(argv[9]);
+        if (argc == 11) {
+            pe[i] = atof(argv[9]);
+            rate[i] = atoi(argv[10]);
         } else {
-            pe[i] = atof(argv[8+i]);
-            rate[i] = atoi(argv[8+numhop+i]);
+            pe[i] = atof(argv[9+i]);
+            rate[i] = atoi(argv[9+numhop+i]);
         }
     }
 
@@ -68,8 +70,8 @@ int main(int argc, char *argv[])
     sp.size_c   = cnum;
     sp.size_b   = bsize;
     sp.size_g   = gsize;
-    sp.bpc      = 1;
-    sp.bnc      = 0;
+    sp.bpc      = 1;    // binary LDPC precode
+    sp.gfpower  = gfpower;
     sp.sys      = 0;
     sp.seed     = -1;
     sp.type     = BATS_SNC;
@@ -93,7 +95,7 @@ int main(int argc, char *argv[])
     }
 
     /* Create decoder */
-    int decoder_t = OA_DECODER;
+    int decoder_t = CBD_DECODER;
     sp.seed = (snc_get_parameters(sc))->seed;
     struct snc_decoder *decoder = snc_create_decoder(&sp, decoder_t);
     clock_t start, stop, dtime = 0;

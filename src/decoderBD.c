@@ -116,10 +116,12 @@ void process_packet_BD(struct decoding_context_BD *dec_ctx, struct snc_packet *p
         } else {
             for (i=0; i<gensize; i++) {
                 int index = dec_ctx->sc->gene[pkt->gid]->pktid[i];
-                if (dec_ctx->sc->params.bnc) {
+                if (dec_ctx->sc->params.gfpower==1) {
                     ces[index] = get_bit_in_array(pkt->coes, i);
-                } else {
+                } else if (dec_ctx->sc->params.gfpower==8) {
                     ces[index] = pkt->coes[i];
+                } else {
+                    ces[index] = read_bits_from_byte_array(pkt->coes, dec_ctx->sc->params.size_g, dec_ctx->sc->params.gfpower, i);
                 }
             }
         }
@@ -155,10 +157,12 @@ void process_packet_BD(struct decoding_context_BD *dec_ctx, struct snc_packet *p
         } else {
             for (i=0; i<gensize; i++) {
                 int orig_index = dec_ctx->sc->gene[pkt->gid]->pktid[i];
-                if (dec_ctx->sc->params.bnc) {
+                if (dec_ctx->sc->params.gfpower == 1) {
                     ces[orig_index] = get_bit_in_array(pkt->coes, i);
-                } else {
+                } else if (dec_ctx->sc->params.gfpower == 8){
                     ces[orig_index] = pkt->coes[i];
+                } else {
+                    ces[orig_index] = read_bits_from_byte_array(pkt->coes, dec_ctx->sc->params.size_g, dec_ctx->sc->params.gfpower, i);
                 }
             }
         }

@@ -250,10 +250,12 @@ void process_packet_GG(struct decoding_context_GG *dec_ctx, struct snc_packet *p
         GF_ELEMENT *pkt_coes = calloc(gensize, sizeof(GF_ELEMENT));
         GF_ELEMENT ce;
         for (i=0; i<gensize; i++) {
-            if (dec_ctx->sc->params.bnc) {
+            if (dec_ctx->sc->params.gfpower==1) {
                 ce = get_bit_in_array(pkt->coes, i);
-            } else {
+            } else if (dec_ctx->sc->params.gfpower==8) {
                 ce = pkt->coes[i];
+            } else {
+                ce = read_bits_from_byte_array(pkt->coes, dec_ctx->sc->params.size_g, dec_ctx->sc->params.gfpower, i);
             }
             pkt_coes[i] = ce;
             // if the corresponding source packet has been decoded, remove it from the coded packet

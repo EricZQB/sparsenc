@@ -90,6 +90,17 @@ struct snc_buffer {
     int                   *pn;          // Positions to store next packet of each subgeneration
     int                   *nsched;      // Number of scheduled times of each subgeneration
     // Use if code in buffer is systematic
+    /* Systematic packet, when received, will be stored in the buffer of each subgen to 
+     * which the systematic packet belongs. If sched_t is systematic, the packet will be buffered
+     * in its original form, and newsys indicator is set, as well as one gid it belongs to and its
+     * location in the corresponding buffer will be set. The next scheduling will be this packet.
+     * If sched_t is not systematic, the received packet will be treated as a normal coded packet, whose
+     * encoding vector is a singleton vector.
+     */
+    int newsys;                         // 1 if a new systeamtic code is to be scheduled
+    int sysgid;                         // go to gbuf[sysgid][sysidx] to get the packet
+    int sysidx;
+    /*
     struct snc_packet    **sysbuf;      // Buffered uncoded packet (needed for systematic code)
     int                    spn;         // Position to store next systematic packet in sysbuf
     int                    sysnum;      // number of buffered systematic packet
@@ -97,6 +108,7 @@ struct snc_buffer {
                                         // -1 if not received, >=0 indicates its position in the sysbuf
     int                    sysptr;      // pointer of already scheduled systematic packet
     int                    sys_sched;   // scheduled systematic packet index in sysbuf
+    */
 };
 
 
@@ -114,7 +126,7 @@ struct snc_buffer {
 // packet belongs to. Clearly, the sending and receiving batches are the same if there 
 // are only one batch in the buffer.
 struct snc_buffer_bats {
-    struct snc_parameters   params;             // pointer to the parameter of the BATS code 
+    struct snc_parameters   params;             // parameter of the BATS code
     struct snc_packet     **srbuf;
     int                     bufsize;            // size of buffer
     int                     sbatchid;           // current sending batch
@@ -140,6 +152,9 @@ int remove_from_list(struct node_list *list, int data);
 int exist_in_list(struct node_list *list, int data);
 void clear_list(struct node_list *list);
 void free_list(struct node_list *list);
+void pack_bits_in_byte_array(unsigned char *coes, int nbytes, unsigned char co, int len, int i);
+unsigned char read_bits_from_byte_array(unsigned char *coes, int nbytes, int len, int i);
+void galois2n_multiply_add_region(GF_ELEMENT *dst, GF_ELEMENT *src, GF_ELEMENT multiplier, int gfpower, int nelem, int nbytes);
 unsigned char get_bit_in_array(unsigned char *coes, int i);
 void set_bit_in_array(unsigned char *coes, int i);
 ID_list **build_subgen_nbr_list(struct snc_context *sc);

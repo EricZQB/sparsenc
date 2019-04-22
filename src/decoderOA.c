@@ -206,7 +206,7 @@ void process_packet_OA(struct decoding_context_OA *dec_ctx, struct snc_packet *p
             pkt_coes[local_pos] = 1;
         } else {
             // normal GNC packets
-            if (dec_ctx->sc->params.bnc) {
+            if (dec_ctx->sc->params.gfpower == 1) {
                 for (i=0; i<gensize; i++)
                     pkt_coes[i] = get_bit_in_array(pkt->coes, i);
             } else {
@@ -289,7 +289,7 @@ void process_packet_OA(struct decoding_context_OA *dec_ctx, struct snc_packet *p
         for (i=0; i<gensize; i++) {
             /* obtain index position of pktid in the full-length vector */
             int curr_pos = dec_ctx->sc->gene[gid]->pktid[i];
-            if (dec_ctx->sc->params.bnc) {
+            if (dec_ctx->sc->params.gfpower == 1) {
                 re_ordered[curr_pos] = get_bit_in_array(pkt->coes, i);
             } else {
                 re_ordered[curr_pos] = pkt->coes[i];
