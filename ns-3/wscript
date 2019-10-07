@@ -1,0 +1,10 @@
+def build(bld):
+    obj = bld.create_ns3_program('sparsenc-udp', ['core', 'network', 'internet', 'point-to-point'])
+    obj.source = 'sparsenc-udp.cc'
+    # Link to libsparsenc.a
+    obj.env.append_value('CXXFLAGS', '-I/mnt/c/Users/yeli/OneDrive/Work/ns-3-allinone/ns-3.29/examples/sparsenc')
+    obj.env.append_value('LINKFLAGS', ['-L/mnt/c/Users/yeli/OneDrive/Work/ns-3-allinone/ns-3.29/examples/sparsenc'])
+    obj.env.append_value('LIB', ['sparsenc'])
+
+    obj = bld.create_ns3_program('lossy-two-hop-tcp', ['core', 'network', 'internet', 'point-to-point', 'applications'])
+    obj.source = 'lossy-two-hop-tcp.cc'

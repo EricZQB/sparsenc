@@ -588,6 +588,9 @@ int snc_packet_length(struct snc_parameters *param)
 // Serialize snc_packet to a byte buffer
 unsigned char *snc_serialize_packet(struct snc_packet *pkt, struct snc_parameters *param)
 {
+    if (pkt == NULL) {
+        return NULL;
+    }
     int pktnum = ALIGN(param->datasize, param->size_p) + param->size_c;
     int gid_len = (param->size_g == pktnum && param->size_b == param->size_g && param->sys !=1) ? 0 : 4;  // don't pack gid if it's non-systematic RLNC
     int ucid_len = (param->sys == 1) ? 4 : 0;  // pack ucid using 4 bytes only if the code is systematic
@@ -605,6 +608,9 @@ unsigned char *snc_serialize_packet(struct snc_packet *pkt, struct snc_parameter
 // De-serialize packet string to a snc_packet struct
 struct snc_packet *snc_deserialize_packet(unsigned char *pktstr, struct snc_parameters *param)
 {
+    if (pktstr == NULL) {
+        return NULL;
+    }
     int pktnum = ALIGN(param->datasize, param->size_p) + param->size_c;
     int gid_len = (param->size_g == pktnum && param->size_b == param->size_g && param->sys !=1) ? 0 : 4;
     int ucid_len = param->sys == 1 ? 4 : 0;

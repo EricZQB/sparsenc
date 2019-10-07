@@ -172,7 +172,7 @@ int main(int argc, char *argv[])
                     if (snc_recode_packet_im(buffer[i-1], pkt, sched_t) == -1)
                         continue;
                 }
-                if (rand() % 100 >= pe[i] * 100) {
+                if (rand() % 10000000 >= pe[i] * 10000000) {
                     if (i < numhop-1) {
                         snc_buffer_packet(buffer[i], pkt);   // intermediate ndoes buffer packets
                     } else {
@@ -199,7 +199,7 @@ int main(int argc, char *argv[])
     printf("dec-time: %.6f dec-delay: %.6f bufsize: %d numhop: %d ", ((double) dtime)/CLOCKS_PER_SEC, (double) decode_delay/CLOCKS_PER_SEC, bufsize, numhop);
     for (i=0; i<numhop; i++) {
         printf("rate[%i]: %d ", i, rate[i]);
-        printf("pe[%i]: %.3f ", i, pe[i]);
+        printf("pe[%i]: %.7f ", i, pe[i]);
     }
     printf(" nuses: %d\n", nuse);
 

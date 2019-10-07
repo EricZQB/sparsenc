@@ -70,6 +70,9 @@ libsparsenc.a: $(GNCENC) $(GGDEC) $(OADEC) $(BDDEC) $(CBDDEC) $(PPDEC) $(RECODER
 sncRLNC: $(GNCENC) $(GGDEC) $(OADEC) $(BDDEC) $(CBDDEC) $(PPDEC) $(RECODER) $(DECODER) test.RLNC.c
 	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^
 
+nhopRLNC_E2E: $(GNCENC) $(GGDEC) $(OADEC) $(BDDEC) $(CBDDEC) $(PPDEC) $(RECODER) $(DECODER) test.e2e.nhopRLNC.c
+	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^ -lm
+
 #Test snc decoder
 sncDecoders: libsparsenc.so test.decoders.c
 	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^ -L. -lsparsenc -lm
@@ -87,7 +90,7 @@ sncRecoder2Hop: libsparsenc.so test.2hopRecoder.c
 	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
 #Test recoder
 sncRecoder-n-Hop: libsparsenc.so test.nhopRecoder.c
-	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^ -L. -lsparsenc -lm
+	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^ -L. -lm -lsparsenc
 #Test recoder, statically linked
 sncRecoder-n-Hop-ST: $(GNCENC) $(GGDEC) $(OADEC) $(BDDEC) $(CBDDEC) $(PPDEC) $(RECODER) $(DECODER) test.nhopRecoder.c
 	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^ -lm
@@ -113,8 +116,21 @@ snc2pairD2D: libsparsenc.so test.2pairD2D.c
 snc4pairD2D: libsparsenc.so test.4pairD2D.c
 	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
 
-sncRecoderNhopBATS: libsparsenc.so test.batsRecoder.c
+sncRecoderNhopBATS: $(GNCENC) $(GGDEC) $(OADEC) $(BDDEC) $(CBDDEC) $(PPDEC) $(RECODER) $(DECODER) test.batsRecoder.c
+	$(CC) -L. -o $@ $(CFLAGS0) $(CFLAGS1) $^ -lm
+
+# For TWC major revision
+sncHeadD2D: libsparsenc.so test.headD2D.c
 	$(CC) -L. -lsparsenc -o $@ $(CFLAGS0) $(CFLAGS1) $^
+
+sncBroadcast: libsparsenc.so test.broadcast.c
+	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^ -L. -lsparsenc -lm
+
+sncMultiPairD2D: libsparsenc.so test.multipairD2D.c
+	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^ -L. -lsparsenc -lm
+
+sncMultiPairD2DNoAlter: libsparsenc.so test.multipairD2D_noalter.c
+	$(CC) -o $@ $(CFLAGS0) $(CFLAGS1) $^ -L. -lsparsenc -lm
 
 $(OBJDIR)/%.o: $(OBJDIR)/%.c $(DEFS)
 	$(CC) -c -fpic -o $@ $< $(CFLAGS0) $(CFLAGS1) $(CFLAGS2)
@@ -122,7 +138,8 @@ $(OBJDIR)/%.o: $(OBJDIR)/%.c $(DEFS)
 
 .PHONY: clean
 clean:
-	rm -f *.o $(OBJDIR)/*.o libsparsenc.so libsparsenc.a sncDecoders sncDecoderST sncDecodersFile sncRecoder2Hop sncRecoder-n-Hop sncRecoder-n-Hop-ST sncRecoderFly sncRestore sncRLNC sncHAPmulticast sncD2Dmulticast snc2UserD2D sncRecoderNhopBATS snc2pairD2D snc4pairD2D sncRecoder-n-Hop-Gilbert-ST
+	rm -f *.o $(OBJDIR)/*.o libsparsenc.so libsparsenc.a sncDecoders sncDecoderST sncDecodersFile sncRecoder2Hop sncRecoder-n-Hop sncRecoder-n-Hop-ST sncRecoderFly sncRestore sncRLNC sncHAPmulticast sncD2Dmulticast snc2UserD2D sncRecoderNhopBATS snc2pairD2D snc4pairD2D sncRecoder-n-Hop-Gilbert-ST nhopRLNC_E2E
+	rm -f sncHeadD2D sncBroadcast sncMultiPairD2D sncMultiPairD2DNoAlter
 
 install: libsparsenc.so
 	cp include/sparsenc.h /usr/include/
