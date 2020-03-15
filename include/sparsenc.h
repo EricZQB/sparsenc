@@ -152,6 +152,9 @@ void snc_process_packet(struct snc_decoder *decoder, struct snc_packet *pkt);
 // Check whether the decoder is finished
 int snc_decoder_finished(struct snc_decoder *decoder);
 
+// Return the current number of the received innovative packets (a.k.a. degree of freedom, dof)
+int snc_get_decoder_dof(struct snc_decoder *decoder);
+
 // Return decode overhead, which is defined as oh = N / M, where
 //   N - Number of received packets to successfully decode
 //   M - Number of source packets

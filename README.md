@@ -16,11 +16,13 @@ The library had been used for performance evaluation and comparison when authori
 
 - Ye Li, J. Zhu and Z. Bao, "Sparse Random Linear Network Coding With Precoded Band Codes," in IEEE Communications Letters, vol. 21, no. 3, pp. 480-483, March 2017.
 
-- Ye Li, S. Zhang, J. Wang, X. Ji, H. Wu and Z. Bao, "A Low-Complexity Coded Transmission Scheme over Finite-Buffer Relay Links," in IEEE Transactions on Communications, vol. 66, no. 7, pp. 2873 - 2887, July. 2018.
+- Ye Li, W.-Y. Chan, S. Blostein, "On Design and Efficient Decoding of Sparse Random Linear Network," in IEEE Access, 5: 17031~17044, 2017.
 
 - Ye Li, S. Zhang, J. Wang, X. Ji, H. Wu and Z. Bao, "A Low-Complexity Coded Transmission Scheme over Finite-Buffer Relay Links," in IEEE Transactions on Communications, vol. 66, no. 7, pp. 2873 - 2887, July. 2018.
 
 - Y. Li, J. Wang, S. Zhang, Z. Bao and J. Wang, "Efficient Coastal Communications with Sparse Network Coding," in IEEE Network, vol. 32, no. 4, pp. 122-128, July/August 2018.
+
+- Y. Li, J. Zhou, J. Wang, Z. Bao, T. Q. S. Quek and J. Wang, "On Data Dissemination Enhanced by Network Coded Device-to-Device Communications," in IEEE Transactions on Wireless Communications, 2020. doi: 10.1109/TWC.2020.2979145 (Early Access: https://ieeexplore.ieee.org/document/9036050)
 
 Usage
 ============

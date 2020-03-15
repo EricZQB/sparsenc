@@ -16,44 +16,51 @@ char usage[] = "Simulate RLNC network coded D2D cooperative transmissions\n\
                    \\       ||\n\
                     --------U2\n\
                 \n\
-                usage: GF_SIZE=q ./programName pktsize snum alpha delta11 delta12 delta21 delta22 epsil11 epsil12 epsil21 epsil22 pD2D1 pD2D2 nD2D_11 nD2D_12 nD2D_21 nD2D22\n";
+                usage: ./programName nuser broadcast_link_loss_probs cooperation_params\n";
 
 int main(int argc, char *argv[])
 {
-    if (argc != 18) {
+    if (argc < 3) {
         printf("%s\n", usage);
         exit(1);
     }
     int sched_t = MLPI_SCHED;
 
+
     struct snc_parameters sp;
     sp.type = BAND_SNC;
     int decoder_t = CBD_DECODER;
-    sp.datasize = atoi(argv[1]) * atoi(argv[2]);
-    sp.size_p   = atoi(argv[1]);
+    int M = 16;
+    int pktsize = 200;
+    sp.datasize = M * pktsize;
+    sp.size_p   = pktsize;
     sp.size_c   = 0;
-    sp.size_b   = atoi(argv[2]);
-    sp.size_g   = atoi(argv[2]);
+    sp.size_b   = M;
+    sp.size_g   = M;
     sp.bpc      = 0;
-    char *gf_evar = getenv("GF_SIZE");
-    if ( gf_evar != NULL && atoi(gf_evar) == 2) {
-        sp.bnc = 1;
-    } else {
-        sp.bnc = 0;
-    }
+    sp.gfpower  = 8;
     sp.sys      = 1;
     sp.seed     = -1;
 
-    double alpha = atof(argv[3]);
-	double delta[4] = {atof(argv[4]), atof(argv[5]), atof(argv[6]), atof(argv[7])};  // broadcast link loss probability
-	double epsil[4] = {atof(argv[8]), atof(argv[9]), atof(argv[10]), atof(argv[11])};  // broadcast link loss probability
-    double pD2D[2] = {atof(argv[12]), atof(argv[13]) };
-    int nD2D[4] = {atoi(argv[14]), atoi(argv[15]), atoi(argv[16]), atoi(argv[17])};
-    int nD2Dmax[2];
-    nD2Dmax[0] = nD2D[0] > nD2D[1] ? nD2D[0] : nD2D[1];
-    nD2Dmax[1] = nD2D[2] > nD2D[3] ? nD2D[2] : nD2D[3];
-	
+    double alpha = 0.05;
+    int nUsers = atoi(argv[1]);
+    double *delta = calloc(nUsers, sizeof(double)); // broadcast link loss probability
+    double *pD2D  = calloc(nUsers/2, sizeof(double));
+    int    *nD2D  = calloc(nUsers, sizeof(int));
+    double *epsil = calloc(nUsers/2, sizeof(double)); // loss probabilities from the head user to each of the others
     int i, j;
+    for (i=0; i<nUsers; i++) {
+        delta[i] = atof(argv[2+i]);
+    }
+    int *nD2Dmax = calloc(nUsers/2, sizeof(int));      // max n of each pair
+    for (i=0; i<nUsers/2; i++) {
+        pD2D[i] = atof(argv[nUsers+2+i*4]);
+        nD2D[i*2] = atoi(argv[nUsers+2+i*4+1]);
+        nD2D[i*2+1] = atoi(argv[nUsers+2+i*4+2]);
+        epsil[i] = atof(argv[nUsers+2+i*4+3]);
+        nD2Dmax[i] = nD2D[i*2] > nD2D[i*2+1] ? nD2D[i*2] : nD2D[i*2+1];
+    }
+	
     struct timeval tv;
     gettimeofday(&tv, NULL);
     srand(tv.tv_sec * 1000 + tv.tv_usec / 1000); // seed use microsec
@@ -69,12 +76,11 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    int nusers = 2;
-    int npairs = 2;
+    int npairs = nUsers/2;
     // Create decoders and buffer for each user of each pair
-    struct snc_decoder **decoders =  malloc(sizeof(struct snc_decoder*) * nusers * npairs);
-    struct snc_buffer **buffers = malloc(sizeof(struct snc_buffer*) * nusers * npairs);
-    for (i=0; i<nusers*npairs; i++) {
+    struct snc_decoder **decoders =  malloc(sizeof(struct snc_decoder*) * nUsers);
+    struct snc_buffer **buffers = malloc(sizeof(struct snc_buffer*) * nUsers);
+    for (i=0; i<nUsers; i++) {
         decoders[i] = snc_create_decoder(&sp, decoder_t);
         buffers[i] = snc_create_buffer(&sp, sp.size_g);  // create a large enough buffer
     }
@@ -82,22 +88,22 @@ int main(int argc, char *argv[])
     clock_t start, stop, dtime = 0;
 
     struct snc_packet *pkt;    // pointer of coded packet
-    int *nuse = calloc(sizeof(int), nusers*npairs);  // count network uses of users
-    double *Ecoop = calloc(sizeof(double), nusers*npairs);  // record cooperation energy consumption of each user
+    int *nuse = calloc(sizeof(int), nUsers);  // count (broadcast) network uses of users
+    double *Ecoop = calloc(sizeof(double), nUsers);  // record cooperation energy consumption of each user
 
     int decoded = 0;
     int count = 0;
-    while (decoded != nusers*npairs) {
+    while (decoded != nUsers) {
         count++;
         pkt = snc_generate_packet(sc);
 
         // Phase I: broadcast to n users
-        for (i=0; i<nusers*npairs; i++) {
+        for (i=0; i<nUsers; i++) {
             if (snc_decoder_finished(decoders[i])) 
                 continue;  // skip completed users
 
             nuse[i] += 1;
-            if (rand() % 100 >= delta[i] * 100) {
+            if (rand() % 10000 >= delta[i] * 10000) {
                 struct snc_packet *brd_pkt = snc_duplicate_packet(pkt, &sp);
                 struct snc_packet *buf_pkt = snc_duplicate_packet(pkt, &sp);
                 snc_buffer_packet(buffers[i], buf_pkt);              // save a copy in the buffer, for the purpose of D2D comm.
@@ -110,32 +116,32 @@ int main(int argc, char *argv[])
         // Phase II: D2D communication
         // D2D phase occurs with probability pD2D, and if occurred, each user sends a packet to the other
         for (int k=0; k<npairs; k++) {
-            if (pD2D[k] != 0 && rand() % 100 < pD2D[k]*100) {
+            if (pD2D[k] != 0 && rand() % 10000 < pD2D[k]*10000) {
                 // Cooperation among each pair
-                for (int n=0; n<nD2Dmax[n]; n++) {
+                for (int n=0; n<nD2Dmax[k]; n++) {
                     // U1 send to U2
-                    if (n<nD2D[k*nusers] && !snc_decoder_finished(decoders[k*nusers+1])) {
-                        pkt = snc_recode_packet(buffers[k*nusers], sched_t);
+                    if (n<nD2D[k*2] && !snc_decoder_finished(decoders[k*2+1])) {
+                        pkt = snc_recode_packet(buffers[k*2], sched_t);
                         if (pkt == NULL)
                             continue;
-                        Ecoop[k*nusers] += alpha;    // counting energy consumption for the cooperation packet
-                        if (rand() % 100 >= epsil[k*nusers]) {
+                        Ecoop[k*2] += alpha;    // counting energy consumption for the cooperation packet
+                        if (rand() % 10000 >= epsil[k]*10000) {
                             struct snc_packet *d2d_pkt = snc_duplicate_packet(pkt, &sp);
-                            snc_process_packet(decoders[k*nusers+1], d2d_pkt);
+                            snc_process_packet(decoders[k*2+1], d2d_pkt);
                             snc_free_packet(d2d_pkt);
                         }
                         snc_free_packet(pkt);
                     }
 
                     // U2 send to U1
-                    if (n<nD2D[k*nusers+1] && !snc_decoder_finished(decoders[k*nusers])) {
-                        pkt = snc_recode_packet(buffers[k*nusers+1], sched_t);
+                    if (n<nD2D[k*2+1] && !snc_decoder_finished(decoders[k*2])) {
+                        pkt = snc_recode_packet(buffers[k*2+1], sched_t);
                         if (pkt == NULL)
                             continue;
-                        Ecoop[k*nusers+1] += alpha;    // counting energy consumption for the cooperation packet
-                        if (rand() % 100 >= epsil[k*nusers+1]) {
+                        Ecoop[k*2+1] += alpha;    // counting energy consumption for the cooperation packet
+                        if (rand() % 10000 >= epsil[k]*10000) {
                             struct snc_packet *d2d_pkt = snc_duplicate_packet(pkt, &sp);
-                            snc_process_packet(decoders[k*nusers], d2d_pkt);
+                            snc_process_packet(decoders[k*2], d2d_pkt);
                             snc_free_packet(d2d_pkt);
                         }
                         snc_free_packet(pkt);
@@ -146,37 +152,37 @@ int main(int argc, char *argv[])
 
         // check decoder status
         decoded = 0;
-        for (i=0; i<npairs*nusers; i++) {
+        for (i=0; i<nUsers; i++) {
             if (snc_decoder_finished(decoders[i]))
                 decoded += 1;
         }
     }
 
-    for (i=0; i<npairs*nusers; i++) {
+    for (i=0; i<nUsers; i++) {
         struct snc_context *dsc = snc_get_enc_context(decoders[i]);
         unsigned char *rec_buf = snc_recover_data(dsc);
         if (memcmp(buf, rec_buf, sp.datasize) != 0)
             fprintf(stderr, "recovered is NOT identical to original.\n");
         printf("user: %d overhead: %.6f ops: %.6f network-uses: %d\n", i, snc_decode_overhead(decoders[i]), snc_decode_cost(decoders[i]), nuse[i]);
     }
-    int GF_size = snc_get_GF_size(&sp);
-    printf("snum: %d pktsize: %d GF_SIZE: %d nBroadcast: %d CoopEnergy: %.6f \n", sp.datasize/sp.size_p, sp.size_p, GF_size, count);
+    double totalEnergy = 0;
     for (i=0; i<npairs; i++) {
         printf("Pair-%d: ", i);
-        for (j=0; j<nusers; j++)
-            printf(" delta[%d]: %.3f ", j+1, delta[i*nusers+j]);
-        for (j=0; j<nusers; j++)
-            printf(" epsil[%d]: %.3f ", j+1, epsil[i*nusers+j]);
+        for (j=0; j<2; j++)
+            printf(" delta[%d]: %.3f ", j+1, delta[i*2+j]);
         printf(" pD2D: %.3f ", pD2D[i]);
-        for (j=0; j<nusers; j++)
-            printf(" nD2D[%d]: %d ", j+1, nD2D[i*nusers+j]);
-        for (j=0; j<nusers; j++)
-            printf(" nuse[%d]: %d ", j+1, nuse[i*nusers+j]);
-        printf(" CoopEnergy: %.6f ", Ecoop[i*nusers]+Ecoop[i*nusers+1]);
+        for (j=0; j<2; j++)
+            printf(" nD2D[%d]: %d ", j+1, nD2D[i*2+j]);
+        printf(" epsil[%d]: %.3f ", j+1, epsil[i]);
+        for (j=0; j<2; j++)
+            printf(" nuse[%d]: %d ", j+1, nuse[i*2+j]);
+        printf(" CoopEnergy: %.6f ", Ecoop[i*2]+Ecoop[i*2+1]);
+        totalEnergy += Ecoop[i*2]+Ecoop[i*2+1];
         printf("\n");
     }
+    printf("snum: %d pktsize: %d GF_POWER: %d nBroadcast: %d TotalCoopEnergy: %.6f \n", sp.datasize/sp.size_p, sp.size_p, sp.gfpower, count, totalEnergy);
     snc_free_enc_context(sc);
-    for (i=0; i<nusers; i++) 
+    for (i=0; i<nUsers; i++) 
         snc_free_decoder(decoders[i]);
     return 0;
 }

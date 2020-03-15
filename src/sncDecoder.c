@@ -107,6 +107,15 @@ int snc_decoder_finished(struct snc_decoder *decoder)
     return 0;
 }
 
+int snc_get_decoder_dof(struct snc_decoder *decoder)
+{
+    switch (decoder->d_type) {
+        case CBD_DECODER:
+            return ((struct decoding_context_CBD *) decoder->dec_ctx)->DoF;
+    }
+    return -1;      // if decoder doesn't support returning intermediate DoF state, return -1
+}
+
 struct snc_context *snc_get_enc_context(struct snc_decoder *decoder)
 {
     switch (decoder->d_type) {
