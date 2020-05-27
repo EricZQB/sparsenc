@@ -1,6 +1,6 @@
 Introduction
 ============
-This project provides a C implementation (and a Python wrapper) encoding/recoding/decoding for network coding. Random linear network coding (RLNC) [1] and several of its sparse variants are implemented. The library supports three catagories of sparse network codes (SNC): random codes, band codes and BATS-like codes [2].
+This project provides a C implementation (and a Python wrapper) for encoding/recoding/decoding of network coding. Random linear network coding (RLNC) [1] and several of its sparse variants are implemented. The library supports three catagories of sparse network codes (SNC): random codes, band codes and BATS-like codes [2].
 
 The following decoders are implemented: 
 
@@ -79,9 +79,14 @@ for sending the random/band codes over a butterfly network. Please see main func
 
 Limitation
 ============
-The library only supports coding against a given block of source packets, i.e., a *generation* of packets as termed in the network coding literature. Sliding-window mode is not supported.
+The library only supports coding against a given block of source packets, i.e., a *generation* of packets as termed in the network coding literature. Sliding-window mode is not supported. 
 
-Reference
+A sliding-window implementation, also known as streaming coding, is available as a separate project at: https://github.com/yeliqseu/streamc, which implementes coding schemes proposed in
+
+- M. Karzand, D. J. Leith, J. Cloud and M. Medard, "Design of FEC for Low Delay in 5G," in IEEE Journal on Selected Areas in Communications, vol. 35, no. 8, pp. 1783-1793, Aug. 2017.
+- Y. Li, F. Zhang, J. Wang, T. Q. S. Quek and J. Wang, "On Streaming Coding for Low-Latency Packet Transmissions over Highly Lossy Links," in IEEE Communications Letters, 2020 (Early Access: https://ieeexplore.ieee.org/document/9075270).
+
+Other References
 ============
 [1] T. Ho, M. Medard, R. Koetter, and D. R. Karger, "A Random Linear Network Coding Approach to Multicast", in IEEE Transactions on Information Theory, Vol 52, No. 10, pp. 4413-4430, 2006.
 
