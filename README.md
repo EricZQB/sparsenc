@@ -24,6 +24,8 @@ The library had been used for performance evaluation and comparison when authori
 
 - Y. Li, J. Zhou, J. Wang, Z. Bao, T. Q. S. Quek and J. Wang, "On Data Dissemination Enhanced by Network Coded Device-to-Device Communications," in IEEE Transactions on Wireless Communications, 2020. doi: 10.1109/TWC.2020.2979145 (Early Access: https://ieeexplore.ieee.org/document/9036050)
 
+- Y. Li, B. Tang, J. Wang and Z. Bao, "On Multi-Hop Short-Packet Communications: Recoding or End-to-End Fountain Coding?," in IEEE Transactions on Vehicular Technology, doi: 10.1109/TVT.2020.3005409 (Early Access: https://ieeexplore.ieee.org/document/9127789)
+
 Usage
 ============
 The library is available as a shared library which is compiled by
